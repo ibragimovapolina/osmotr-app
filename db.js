@@ -1,13 +1,4 @@
 // ================= IndexedDB v2 =================
-//
-// Хранилища:
-//   drafts    — текущий черновик осмотра (один)
-//   reference — справочник квартир      (key: 'all')
-//   remarks   — правила замечаний       (key: 'all')
-//   marks     — марки окон              (key: 'all')
-//   meta      — версии, даты синхронизации
-//   visits    — очередь осмотров        (key: clientId)
-//   photos    — очередь фото            (key: photoId, индекс по visitClientId)
 
 const DB_NAME = 'osmotr_db';
 const DB_VERSION = 2;
@@ -51,6 +42,7 @@ function openDB() {
         const s = db.createObjectStore(STORE_VISITS, { keyPath: 'clientId' });
         s.createIndex('status', 'status', { unique: false });
         s.createIndex('createdAt', 'createdAt', { unique: false });
+        s.createIndex('kvNumber', 'payload.kvNumber', { unique: false });
       }
       if (!db.objectStoreNames.contains(STORE_PHOTOS)) {
         const s = db.createObjectStore(STORE_PHOTOS, { keyPath: 'photoId' });
@@ -237,6 +229,17 @@ async function getPendingVisits() {
   return all.filter(v => v.status !== 'synced');
 }
 
+async function getSyncedVisits() {
+  const all = await getAllVisits();
+  return all.filter(v => v.status === 'synced');
+}
+
+async function findVisitsByKv(kvNumber) {
+  const all = await getAllVisits();
+  const kv = String(kvNumber || '').trim().toLowerCase();
+  return all.filter(v => v.payload && String(v.payload.kvNumber || '').trim().toLowerCase() === kv);
+}
+
 async function deleteVisit(clientId) {
   try {
     const db = await openDB();
@@ -289,6 +292,15 @@ async function getPhotosForVisit(visitClientId) {
   } catch (e) { return []; }
 }
 
+async function getAllPhotos() {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_PHOTOS, 'readonly');
+    const r = tx.objectStore(STORE_PHOTOS).getAll();
+    return (await req(r)) || [];
+  } catch (e) { return []; }
+}
+
 async function deletePhoto(photoId) {
   try {
     const db = await openDB();
@@ -304,18 +316,13 @@ async function deletePhoto(photoId) {
 // ================= СТАТИСТИКА =================
 async function getQueueStats() {
   const visits = await getAllVisits();
-  let photos = [];
-  try {
-    const db = await openDB();
-    const tx = db.transaction(STORE_PHOTOS, 'readonly');
-    const r = tx.objectStore(STORE_PHOTOS).getAll();
-    photos = (await req(r)) || [];
-  } catch (e) {}
+  const photos = await getAllPhotos();
 
   return {
     pendingVisits: visits.filter(v => v.status !== 'synced').length,
     pendingPhotos: photos.filter(p => p.status !== 'uploaded').length,
-    totalVisits: visits.length
+    totalVisits: visits.length,
+    syncedVisits: visits.filter(v => v.status === 'synced').length
   };
 }
 
@@ -329,15 +336,19 @@ function uuid() {
   });
 }
 
+// ================= ИМЯ ОСМОТРЩИКА =================
+async function getUserName() {
+  const v = await getMeta('userName');
+  return v ? String(v) : '';
+}
+async function setUserName(name) {
+  return await setMeta('userName', String(name || '').trim());
+}
+
 // ================= ТИХОЕ ОБНОВЛЕНИЕ СПРАВОЧНИКА =================
 async function silentUpdateReference() {
   if (!navigator.onLine) return false;
-   const existingRef = await getReference();
-  const refEmpty = !existingRef || Object.keys(existingRef).length === 0;
-  if (typeof apiGet !== 'function') {
-    console.warn('[sync] apiGet ещё не загружен');
-    return false;
-  }
+  if (typeof apiGet !== 'function') return false;
   try {
     const ver = await apiGet('getVersion');
     const serverVersion = (ver && ver.data) ? ver.data : ver;
@@ -348,8 +359,7 @@ async function silentUpdateReference() {
       String(serverVersion.reference) === '0' ||
       String(serverVersion.reference) === '';
 
- const same =
-      !refEmpty &&
+    const same =
       !noVersionYet &&
       localVersion &&
       localVersion.reference === serverVersion.reference &&
@@ -392,10 +402,11 @@ window.db = {
   getReference, setReference,
   getRemarks, setRemarks,
   getMarks, setMarks,
-  addVisit, getVisit, updateVisit, getAllVisits, getPendingVisits, deleteVisit,
-  addPhoto, getPhoto, updatePhoto, getPhotosForVisit, deletePhoto,
+  addVisit, getVisit, updateVisit, getAllVisits, getPendingVisits, getSyncedVisits, findVisitsByKv, deleteVisit,
+  addPhoto, getPhoto, updatePhoto, getPhotosForVisit, getAllPhotos, deletePhoto,
   getQueueStats,
   uuid,
+  getUserName, setUserName,
   silentUpdateReference,
   _openDB: openDB
 };
