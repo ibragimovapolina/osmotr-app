@@ -4,7 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
   <meta name="theme-color" content="#1a73e8">
-  <title>Осмотр квартир</title>
+  <title>Осмотры квартир</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="apple-touch-icon" href="./icon-192.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="./icon-192.png">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -15,5 +18,15 @@
   <script src="structure.js"></script>
   <script src="sync.js"></script>
   <script src="app.js"></script>
+  <script>
+    // Регистрируем Service Worker для офлайн-режима
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then((reg) => console.log('[SW] зарегистрирован, scope:', reg.scope))
+          .catch((err) => console.warn('[SW] ошибка регистрации:', err));
+      });
+    }
+  </script>
 </body>
 </html>
