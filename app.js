@@ -30,9 +30,9 @@ async function init() {
   state.screen = 'home';
   render();
 
-  // Попробовать тихо обновить справочник (если есть модуль sync)
-  if (window.sync && window.sync.silentUpdateReference) {
-    window.sync.silentUpdateReference().catch(() => {});
+  // Попробовать тихо обновить справочник, если функция есть
+  if (window.db && window.db.silentUpdateReference) {
+    window.db.silentUpdateReference().catch(() => {});
   }
 }
 
@@ -110,8 +110,64 @@ function renderHome(app) {
     <div class="card">
       <button class="btn btn-primary btn-large" onclick="startNewVisit()">🏠 Новый осмотр</button>
       <button class="btn btn-secondary" onclick="showDiagnostics()">🔍 Диагностика</button>
+      <button class="btn btn-secondary" onclick="testNetwork()">📡 Тест сети</button>
     </div>
   `;
+}
+
+// ================= ТЕСТ СЕТИ =================
+async function testNetwork() {
+  const lines = [];
+  lines.push('=== Тест связи с GAS ===');
+  lines.push('Сеть: ' + (navigator.onLine ? 'онлайн' : 'офлайн'));
+  lines.push('API_URL: ' + API_URL);
+  lines.push('');
+
+  // Тест 1: ping
+  try {
+    lines.push('1) ping…');
+    const r = await apiGet('ping');
+    lines.push('   OK: ' + JSON.stringify(r).substring(0, 120));
+  } catch (e) {
+    lines.push('   ОШИБКА: ' + e.message);
+  }
+
+  // Тест 2: getVersion
+  try {
+    lines.push('2) getVersion…');
+    const r = await apiGet('getVersion');
+    lines.push('   OK: ' + JSON.stringify(r).substring(0, 200));
+  } catch (e) {
+    lines.push('   ОШИБКА: ' + e.message);
+  }
+
+  // Тест 3: getReference
+  try {
+    lines.push('3) getReference…');
+    const r = await apiGet('getReference');
+    const data = (r && r.data) ? r.data : r;
+    const cnt = data && typeof data === 'object' ? Object.keys(data).length : '?';
+    lines.push('   OK, квартир: ' + cnt);
+    if (cnt > 0) {
+      const sampleKey = Object.keys(data)[0];
+      lines.push('   Пример ключа: ' + sampleKey);
+    }
+  } catch (e) {
+    lines.push('   ОШИБКА: ' + e.message);
+  }
+
+  // Тест 4: запись в IndexedDB
+  try {
+    lines.push('4) Запись в IndexedDB…');
+    await window.db.setReference({ sample: 1 });
+    const r = await window.db.getReference();
+    lines.push('   OK, записано: ' + (r ? Object.keys(r).length : '?'));
+    await window.db.setReference({});
+  } catch (e) {
+    lines.push('   ОШИБКА: ' + e.message);
+  }
+
+  alert(lines.join('\n'));
 }
 
 // ================= ДИАГНОСТИКА =================
@@ -119,19 +175,17 @@ async function showDiagnostics() {
   try {
     const db = await window.db._openDB();
     const stores = Array.from(db.objectStoreNames);
-
     const stats = await window.db.getQueueStats();
 
-    let ref = null, remarks = null, marks = null;
+    let ref = null, remarks = null, marks = null, version = null;
     try { ref = await window.db.getReference(); } catch(e) {}
     try { remarks = await window.db.getRemarks(); } catch(e) {}
     try { marks = await window.db.getMarks(); } catch(e) {}
+    try { version = await window.db.getMeta('version'); } catch(e) {}
 
     const refCount = ref ? Object.keys(ref).length : 0;
     const remCount = remarks ? Object.keys(remarks).length : 0;
     const marksCount = marks ? Object.keys(marks).length : 0;
-
-    const version = await window.db.getMeta('version');
 
     alert(
       '🔍 Диагностика IndexedDB\n\n' +
@@ -240,15 +294,12 @@ function onKvInput(value) {
   }, 400);
 }
 
-// Ищем квартиру: сначала в сети, если ошибка — в локальном кэше
 async function checkApartmentSmart(kv) {
   const kvKey = String(kv).trim().toLowerCase();
   try {
     const res = await apiGet('checkApartment', { kvNumber: kv });
-    const data = res.data || res;
-    return data;
+    return res.data || res;
   } catch (netErr) {
-    // Фолбэк на кэш
     const ref = await window.db.getReference();
     if (ref && ref[kvKey]) {
       return { found: true, kv: kv, data: ref[kvKey], fromCache: true };
@@ -358,23 +409,11 @@ async function onRefNext() {
   }
 }
 
-// getFormData: сеть → фолбэк на локальную сборку из кэша
 async function getFormDataSmart(apartment) {
   try {
     const res = await apiGet('getFormData', { apartment: apartment });
-    const data = res.data || res;
-    return data;
+    return res.data || res;
   } catch (netErr) {
-    // Локальная сборка из кэша
-    if (window.localForm && window.localForm.buildFormData) {
-      const [ref, remarks] = await Promise.all([
-        window.db.getReference(),
-        window.db.getRemarks()
-      ]);
-      if (ref && remarks) {
-        return window.localForm.buildFormData(apartment, remarks);
-      }
-    }
     throw netErr;
   }
 }
@@ -849,7 +888,6 @@ async function submitVisit() {
       visitedAt: new Date().toISOString()
     };
 
-    // TODO: на шаге C заменим на сохранение в очередь IndexedDB
     await apiGet('submitVisit', payload);
     await new Promise(resolve => setTimeout(resolve, 2000));
 
