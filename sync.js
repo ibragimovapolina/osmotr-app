@@ -1,13 +1,14 @@
-// ================= Движок синхронизации v2 =================
+// ================= Движок синхронизации v3 =================
 //
-// Следит за очередью осмотров и фото в IndexedDB.
-// Порядок отправки одного осмотра:
-//   1) загружаем все фото по одному (POST) → получаем fileId/url
-//   2) собираем актуальный payload.results с url фото
-//   3) отправляем submitVisit
+// Отправка осмотра: фото через POST → сам осмотр через POST.
+// Никаких «застрял навсегда»: вместо лимита попыток — backoff по времени.
+// Ошибки НЕ удаляют осмотр, он остаётся в очереди до успеха.
 
 const SYNC_INTERVAL_MS = 30 * 1000;
-const MAX_ATTEMPTS = 5;
+
+// Задержки между попытками для одного осмотра (в миллисекундах):
+// после 1-й ошибки — 10 сек, после 2-й — 30 сек, потом 1 мин, 5 мин, 15 мин, 1 час.
+const RETRY_DELAYS = [10 * 1000, 30 * 1000, 60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000, 60 * 60 * 1000];
 
 let _syncRunning = false;
 let _syncTimer = null;
@@ -19,14 +20,20 @@ async function syncNow() {
   if (!navigator.onLine) return { skipped: true, reason: 'offline' };
   _syncRunning = true;
 
-  const result = { sent: 0, failed: 0, photos: 0, errors: [] };
+  const result = { sent: 0, failed: 0, photos: 0, skipped: 0, errors: [] };
   try {
     const pending = await window.db.getPendingVisits();
-    // Сортируем по дате создания — сначала старые
     pending.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
 
     for (const visit of pending) {
       if (!navigator.onLine) break;
+
+      // Проверяем — не пора ли пробовать снова
+      if (!shouldRetryNow(visit)) {
+        result.skipped++;
+        continue;
+      }
+
       try {
         const r = await syncVisit(visit);
         result.sent++;
@@ -41,10 +48,6 @@ async function syncNow() {
           attempts: attempts,
           lastAttemptAt: new Date().toISOString()
         });
-        // Если слишком много попыток — пропускаем этот осмотр до следующей сессии
-        if (attempts >= MAX_ATTEMPTS) {
-          console.warn('[sync] Слишком много попыток для', visit.clientId);
-        }
       }
     }
   } finally {
@@ -52,6 +55,30 @@ async function syncNow() {
     notifyUI();
   }
   return result;
+}
+
+function shouldRetryNow(visit) {
+  if (!visit.lastAttemptAt) return true;
+  const delay = RETRY_DELAYS[Math.min((visit.attempts || 0) - 1, RETRY_DELAYS.length - 1)];
+  if (delay === undefined) return true;
+  const since = Date.now() - new Date(visit.lastAttemptAt).getTime();
+  return since >= delay;
+}
+
+async function resetAllAttempts() {
+  const all = await window.db.getAllVisits();
+  for (const v of all) {
+    if (v.status !== 'synced') {
+      await window.db.updateVisit(v.clientId, {
+        attempts: 0,
+        lastAttemptAt: null,
+        status: 'pending',
+        lastError: ''
+      });
+    }
+  }
+  notifyUI();
+  return true;
 }
 
 function startAutoSync() {
@@ -87,15 +114,14 @@ async function syncVisit(visit) {
 
   let photosUploaded = 0;
 
-  // 1. Загружаем все фото, привязанные к этому осмотру
+  // 1. Загружаем все фото (по одному POST)
   const photos = await window.db.getPhotosForVisit(visit.clientId);
-  const photoMap = {}; // stateKey → [{fileId, url, name}, ...]
+  const photoMap = {};
 
   for (const photo of photos) {
     if (!navigator.onLine) throw new Error('Офлайн, синхронизация прервана');
 
     if (photo.status === 'uploaded' && photo.remote) {
-      // Уже загружено — переиспользуем
       pushPhotoToMap(photoMap, photo.stateKey, photo.remote);
       continue;
     }
@@ -120,11 +146,11 @@ async function syncVisit(visit) {
     }
   }
 
-  // 2. Собираем payload с актуальными url
+  // 2. Собираем payload с URL фото
   const payload = buildPayloadWithPhotos(visit.payload, photoMap);
-
-  // 3. Отправляем осмотр
   payload.clientId = visit.clientId;
+
+  // 3. Отправляем сам осмотр ЧЕРЕЗ POST
   const res = await postApi('submitVisit', payload);
   const data = (res && res.data) ? res.data : res;
 
@@ -134,12 +160,12 @@ async function syncVisit(visit) {
     serverRow: (data && data.row) || null
   });
 
-  // 4. Удаляем отправленные фото из IndexedDB
+  // 4. Удаляем отправленные фото
   for (const p of photos) {
     await window.db.deletePhoto(p.photoId);
   }
 
-  console.log('[sync] Осмотр отправлен:', visit.clientId);
+  console.log('[sync] ✅ Осмотр отправлен:', visit.clientId, 'строка', (data && data.row));
   return { photosUploaded: photosUploaded };
 }
 
@@ -148,15 +174,12 @@ function pushPhotoToMap(map, stateKey, remote) {
   map[stateKey].push(remote);
 }
 
-// ================= СБОРКА PAYLOAD С ФОТО =================
-
 function buildPayloadWithPhotos(originalPayload, photoMap) {
   const results = JSON.parse(JSON.stringify(originalPayload.results || {}));
 
   Object.keys(photoMap).forEach(stateKey => {
-    if (stateKey === '__extra__') return; // обрабатываем отдельно
+    if (stateKey === '__extra__') return;
     const rs = results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [] };
-    // Уже загруженные ранее фото (если осмотр отправляется частично)
     const existing = (rs.photos || []).filter(p => p && p.url);
     const fresh = photoMap[stateKey].map(r => ({
       fileId: r.fileId,
@@ -180,7 +203,18 @@ function buildPayloadWithPhotos(originalPayload, photoMap) {
   });
 }
 
-// ================= POST ДЛЯ ФОТО =================
+// ================= POST-ЗАПРОСЫ =================
+
+async function postApi(action, payload) {
+  const response = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: action, payload: payload })
+  });
+  if (!response.ok) throw new Error('HTTP ' + response.status);
+  const text = await response.text();
+  return parseResponse(text);
+}
 
 async function uploadPhotoPost(blob, fileName, kvNumber) {
   const base64 = await blobToBase64(blob);
@@ -220,5 +254,6 @@ function blobToBase64(blob) {
 window.sync = {
   syncNow,
   startAutoSync,
-  stopAutoSync
+  stopAutoSync,
+  resetAllAttempts
 };
