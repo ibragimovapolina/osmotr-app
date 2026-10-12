@@ -17,7 +17,9 @@ const state = {
     extraPhotos: []
   },
   submitResult: null,
-  pendingDraft: null
+  pendingDraft: null,
+  queueStats: { pendingVisits: 0, pendingPhotos: 0, totalVisits: 0 },
+  queueList: []
 };
 
 // ================= СТАРТ =================
@@ -28,12 +30,29 @@ async function init() {
   const draft = await checkDraftOnStart();
   state.pendingDraft = draft;
   state.screen = 'home';
+  await refreshQueueStats();
   render();
 
-  // Попробовать тихо обновить справочник, если функция есть
   if (window.db && window.db.silentUpdateReference) {
     window.db.silentUpdateReference().catch(() => {});
   }
+
+  if (window.sync && window.sync.startAutoSync) {
+    window.sync.startAutoSync();
+  }
+}
+
+// Коллбэк из sync.js — когда что-то изменилось в очереди
+window.onQueueChanged = async function () {
+  await refreshQueueStats();
+  if (state.screen === 'home' || state.screen === 'queue') render();
+};
+
+async function refreshQueueStats() {
+  if (!window.db || !window.db.getQueueStats) return;
+  try {
+    state.queueStats = await window.db.getQueueStats();
+  } catch (e) { /* ignore */ }
 }
 
 // ================= API =================
@@ -86,7 +105,8 @@ function render() {
   if (state.screen === 'newVisitKv')  return renderNewVisitKv(app);
   if (state.screen === 'newVisitRef') return renderNewVisitRef(app);
   if (state.screen === 'division')    return renderDivision(app);
-  if (state.screen === 'done')        return renderDone(app);
+  if (state.screen === 'saved')       return renderSaved(app);
+  if (state.screen === 'queue')       return renderQueue(app);
 }
 
 // ================= ГЛАВНЫЙ ЭКРАН =================
@@ -95,11 +115,14 @@ function renderHome(app) {
   const draftInfo = hasDraft && state.pendingDraft.form
     ? `Квартира ${state.pendingDraft.form.kvNumber || '—'}` : '';
 
+  const pending = state.queueStats.pendingVisits || 0;
+
   app.innerHTML = `
     <div class="user-greeting">
       <div class="avatar">О</div>
       <div class="email">Осмотр квартир</div>
     </div>
+
     ${hasDraft ? `
     <div class="card" style="background:#fff8e1;border:1px solid #f9ab00;">
       <h2 style="margin-bottom:8px;">📋 Незавершённый осмотр</h2>
@@ -107,66 +130,83 @@ function renderHome(app) {
       <button class="btn btn-primary btn-large" style="margin-top:12px;" onclick="continueDraft()">▶ Продолжить черновик</button>
       <button class="btn btn-secondary" style="margin-top:8px;" onclick="discardDraft()">🗑 Удалить черновик</button>
     </div>` : ''}
+
+    ${pending > 0 ? `
+    <div class="card" style="background:#e8f0fe;border:1px solid #1a73e8;">
+      <h2 style="margin-bottom:8px;">📤 Ожидают отправки: ${pending}</h2>
+      <p style="color:#1a73e8;font-size:14px;">${navigator.onLine ? 'Идёт отправка…' : 'Появятся в сети — отправятся автоматически.'}</p>
+      <button class="btn btn-primary" style="margin-top:12px;" onclick="showQueue()">📋 Открыть очередь</button>
+      ${navigator.onLine ? `<button class="btn btn-secondary" style="margin-top:8px;" onclick="syncAllNow()">🔄 Отправить всё сейчас</button>` : ''}
+    </div>` : ''}
+
     <div class="card">
       <button class="btn btn-primary btn-large" onclick="startNewVisit()">🏠 Новый осмотр</button>
       <button class="btn btn-secondary" onclick="showDiagnostics()">🔍 Диагностика</button>
-      <button class="btn btn-secondary" onclick="testNetwork()">📡 Тест сети</button>
     </div>
   `;
 }
 
-// ================= ТЕСТ СЕТИ =================
-async function testNetwork() {
-  const lines = [];
-  lines.push('=== Тест связи с GAS ===');
-  lines.push('Сеть: ' + (navigator.onLine ? 'онлайн' : 'офлайн'));
-  lines.push('API_URL: ' + API_URL);
-  lines.push('');
+async function syncAllNow() {
+  if (!window.sync || !window.sync.syncNow) return;
+  await window.sync.syncNow();
+  await refreshQueueStats();
+  render();
+}
 
-  // Тест 1: ping
-  try {
-    lines.push('1) ping…');
-    const r = await apiGet('ping');
-    lines.push('   OK: ' + JSON.stringify(r).substring(0, 120));
-  } catch (e) {
-    lines.push('   ОШИБКА: ' + e.message);
+async function showQueue() {
+  if (!window.db || !window.db.getAllVisits) return;
+  state.queueList = await window.db.getAllVisits();
+  state.screen = 'queue';
+  render();
+  window.scrollTo(0, 0);
+}
+
+function renderQueue(app) {
+  const visits = state.queueList || [];
+  const pending = visits.filter(v => v.status !== 'synced');
+
+  const itemsHtml = pending.length
+    ? pending.map(v => {
+        const kv = v.payload && v.payload.kvNumber ? v.payload.kvNumber : '—';
+        const when = v.createdAt ? new Date(v.createdAt).toLocaleString('ru-RU') : '';
+        const statusMap = {
+          pending: '⏳ Ожидает',
+          syncing: '📤 Отправляется',
+          error: '❌ Ошибка: ' + (v.lastError || '—')
+        };
+        const statusText = statusMap[v.status] || v.status;
+        return `
+          <div class="object-card">
+            <div class="object-title">Квартира ${escapeHtml(kv)}</div>
+            <p style="font-size:14px;color:#5f6368;margin-bottom:8px;">${escapeHtml(when)}</p>
+            <p style="font-size:14px;color:#5f6368;">${escapeHtml(statusText)}</p>
+            <button class="btn btn-secondary" style="margin-top:8px;" onclick="deleteQueuedVisit('${escapeAttr(v.clientId)}')">🗑 Удалить из очереди</button>
+          </div>
+        `;
+      }).join('')
+    : '<div class="hint">Очередь пуста.</div>';
+
+  app.innerHTML = `
+    <div class="card">
+      <div class="step-header">
+        <h2>Очередь отправки</h2>
+        <p>Всего в очереди: ${pending.length}</p>
+      </div>
+      ${itemsHtml}
+      ${pending.length && navigator.onLine ? `<button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="syncAllNow()">🔄 Отправить всё сейчас</button>` : ''}
+      <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
+    </div>
+  `;
+}
+
+async function deleteQueuedVisit(clientId) {
+  if (!confirm('Удалить осмотр из очереди? Данные не будут отправлены.')) return;
+  if (window.db && window.db.deleteVisit) {
+    await window.db.deleteVisit(clientId);
   }
-
-  // Тест 2: getVersion
-  try {
-    lines.push('2) getVersion…');
-    const r = await apiGet('getVersion');
-    lines.push('   OK: ' + JSON.stringify(r).substring(0, 200));
-  } catch (e) {
-    lines.push('   ОШИБКА: ' + e.message);
-  }
-
-  // Тест 3: getReference
-  try {
-    lines.push('3) getReference…');
-    const r = await apiGet('getReference');
-    const data = (r && r.data) ? r.data : r;
-    const cnt = data && typeof data === 'object' ? Object.keys(data).length : '?';
-    lines.push('   OK, квартир: ' + cnt);
-    if (cnt > 0) {
-      const sampleKey = Object.keys(data)[0];
-      lines.push('   Пример ключа: ' + sampleKey);
-    }
-  } catch (e) {
-    lines.push('   ОШИБКА: ' + e.message);
-  }
-
-  // Тест 4: запись в IndexedDB (без изменения реальных данных)
-  try {
-    lines.push('4) Запись в IndexedDB…');
-    await window.db.setMeta('_test_write', Date.now());
-    const v = await window.db.getMeta('_test_write');
-    lines.push('   OK, запись: ' + v);
-  } catch (e) {
-    lines.push('   ОШИБКА: ' + e.message);
-  }
-
-  alert(lines.join('\n'));
+  await refreshQueueStats();
+  state.queueList = await window.db.getAllVisits();
+  render();
 }
 
 // ================= ДИАГНОСТИКА =================
@@ -418,7 +458,7 @@ async function getFormDataSmart(apartment) {
 }
 
 function backToKv() { state.screen = 'newVisitKv'; render(); }
-function goHome() { state.screen = 'home'; render(); }
+function goHome() { state.screen = 'home'; refreshQueueStats().then(render); }
 
 // ================= РАЗДЕЛ =================
 function renderDivision(app) {
@@ -875,9 +915,10 @@ function onDivisionBack() {
 // ================= ОТПРАВКА =================
 async function submitVisit() {
   const app = document.getElementById('app');
-  app.innerHTML = '<div class="loading">Отправка…</div>';
+  app.innerHTML = '<div class="loading">Сохранение…</div>';
 
   try {
+    const clientId = window.db.uuid();
     const payload = {
       email: (state.user && state.user.email) || '',
       kvNumber: state.form.kvNumber,
@@ -887,29 +928,52 @@ async function submitVisit() {
       visitedAt: new Date().toISOString()
     };
 
-    await apiGet('submitVisit', payload);
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Кладём в очередь IndexedDB
+    await window.db.addVisit({
+      clientId: clientId,
+      createdAt: new Date().toISOString(),
+      status: 'pending',
+      attempts: 0,
+      lastError: '',
+      payload: payload
+    });
 
+    // Чистим черновик
     if (window.db && window.db.clearDraft) await window.db.clearDraft();
 
-    state.screen = 'done';
-    state.submitResult = { row: null };
+    await refreshQueueStats();
+
+    // Пробуем сразу отправить, если есть сеть
+    if (navigator.onLine && window.sync && window.sync.syncNow) {
+      window.sync.syncNow().catch(() => {});
+    }
+
+    state.screen = 'saved';
+    state.submitResult = { clientId: clientId };
     render();
     window.scrollTo(0, 0);
   } catch (err) {
     app.innerHTML = `
-      <div class="error-box"><strong>Ошибка отправки:</strong><br>${escapeHtml(err.message)}</div>
+      <div class="error-box"><strong>Ошибка сохранения:</strong><br>${escapeHtml(err.message)}</div>
       <button class="btn btn-secondary" onclick="submitVisit()">Попробовать снова</button>
     `;
   }
 }
 
-function renderDone(app) {
+function renderSaved(app) {
+  const online = navigator.onLine;
+  const pending = state.queueStats.pendingVisits || 0;
+
   app.innerHTML = `
     <div class="card" style="text-align:center;">
       <div class="done-icon">✅</div>
-      <h2>Осмотр отправлен</h2>
-      <p style="margin-top:12px;">Данные записаны в таблицу.</p>
+      <h2>Осмотр сохранён</h2>
+      <p style="margin-top:12px;">
+        ${online
+          ? 'Отправляется в таблицу…'
+          : 'Отправится при появлении сети.'}
+      </p>
+      ${pending > 0 ? `<p style="margin-top:8px;color:#5f6368;font-size:14px;">Сейчас в очереди: ${pending}</p>` : ''}
       <button class="btn btn-primary btn-large" style="margin-top:24px;" onclick="startNewVisit()">🏠 Оформить ещё один осмотр</button>
       <button class="btn btn-secondary btn-large" onclick="goHome()">← На главную</button>
     </div>
