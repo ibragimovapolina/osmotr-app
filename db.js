@@ -2,15 +2,14 @@
 //
 // Хранилища:
 //   drafts    — текущий черновик осмотра (один)
-//   reference — справочник квартир      (key: kv)
-//   remarks   — правила замечаний       (key: type)
-//   marks     — марки окон              (key: kv)
+//   reference — справочник квартир      (key: 'all')
+//   remarks   — правила замечаний       (key: 'all')
+//   marks     — марки окон              (key: 'all')
 //   meta      — версии, даты синхронизации
 //   visits    — очередь осмотров        (key: clientId)
-//   photos    — очередь фото            (key: photoId, index по visitClientId)
+//   photos    — очередь фото            (key: photoId, индекс по visitClientId)
 //
-// Всё асинхронное, errors не пробрасываются наружу — везде тихий console.warn,
-// чтобы приложение не падало из-за IndexedDB.
+// Все ошибки глушатся — приложение не падает из-за IndexedDB.
 
 const DB_NAME = 'osmotr_db';
 const DB_VERSION = 2;
@@ -34,7 +33,6 @@ function openDB() {
     request.onsuccess = () => resolve(request.result);
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
-      const oldVersion = event.oldVersion || 0;
 
       if (!db.objectStoreNames.contains(STORE_DRAFTS)) {
         db.createObjectStore(STORE_DRAFTS);
@@ -64,25 +62,6 @@ function openDB() {
     };
   });
   return _dbPromise;
-}
-
-// Универсальный helper: выполнить операцию над store
-async function withStore(storeName, mode, fn) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, mode);
-    const store = tx.objectStore(storeName);
-    let result;
-    try {
-      result = fn(store);
-    } catch (err) {
-      reject(err);
-      return;
-    }
-    tx.oncomplete = () => resolve(result && result.__req ? result.__req.result : result);
-    tx.onerror = () => reject(tx.error || new Error('Ошибка транзакции'));
-    tx.onabort = () => reject(tx.error || new Error('Транзакция прервана'));
-  });
 }
 
 function req(request) {
@@ -155,8 +134,7 @@ async function setMeta(key, value) {
   } catch (e) { return false; }
 }
 
-// ================= REFERENCE =================
-// Храним весь справочник одним объектом под ключом 'all' — так быстрее читать.
+// ================= REFERENCE / REMARKS / MARKS =================
 
 async function getReference() {
   try {
@@ -166,7 +144,6 @@ async function getReference() {
     return (await req(r)) || null;
   } catch (e) { return null; }
 }
-
 async function setReference(map) {
   try {
     const db = await openDB();
@@ -179,8 +156,6 @@ async function setReference(map) {
   } catch (e) { return false; }
 }
 
-// ================= REMARKS =================
-
 async function getRemarks() {
   try {
     const db = await openDB();
@@ -189,7 +164,6 @@ async function getRemarks() {
     return (await req(r)) || null;
   } catch (e) { return null; }
 }
-
 async function setRemarks(map) {
   try {
     const db = await openDB();
@@ -202,8 +176,6 @@ async function setRemarks(map) {
   } catch (e) { return false; }
 }
 
-// ================= MARKS =================
-
 async function getMarks() {
   try {
     const db = await openDB();
@@ -212,7 +184,6 @@ async function getMarks() {
     return (await req(r)) || null;
   } catch (e) { return null; }
 }
-
 async function setMarks(map) {
   try {
     const db = await openDB();
@@ -225,16 +196,7 @@ async function setMarks(map) {
   } catch (e) { return false; }
 }
 
-// ================= VISITS (очередь осмотров) =================
-// Формат записи:
-// {
-//   clientId: 'uuid',
-//   createdAt: ISO,
-//   status: 'pending' | 'syncing' | 'synced' | 'error',
-//   attempts: 0,
-//   lastError: '',
-//   payload: { ...то, что отправляем в submitVisit... }
-// }
+// ================= VISITS =================
 
 async function addVisit(visit) {
   try {
@@ -261,8 +223,7 @@ async function updateVisit(clientId, patch) {
   try {
     const existing = await getVisit(clientId);
     if (!existing) return false;
-    const updated = Object.assign({}, existing, patch);
-    return await addVisit(updated);
+    return await addVisit(Object.assign({}, existing, patch));
   } catch (e) { return false; }
 }
 
@@ -292,20 +253,7 @@ async function deleteVisit(clientId) {
   } catch (e) { return false; }
 }
 
-// ================= PHOTOS (очередь фото) =================
-// Формат записи:
-// {
-//   photoId: 'uuid',
-//   visitClientId: 'uuid',
-//   stateKey: 'koridor.steny' | '__extra__',
-//   fileName: 'koridor_steny_1_...jpg',
-//   kvNumber: '179',
-//   blob: Blob,
-//   status: 'pending' | 'uploading' | 'uploaded' | 'error',
-//   attempts: 0,
-//   lastError: '',
-//   remote: null | { fileId, url, name }
-// }
+// ================= PHOTOS =================
 
 async function addPhoto(photo) {
   try {
@@ -332,8 +280,7 @@ async function updatePhoto(photoId, patch) {
   try {
     const existing = await getPhoto(photoId);
     if (!existing) return false;
-    const updated = Object.assign({}, existing, patch);
-    return await addPhoto(updated);
+    return await addPhoto(Object.assign({}, existing, patch));
   } catch (e) { return false; }
 }
 
@@ -359,27 +306,21 @@ async function deletePhoto(photoId) {
   } catch (e) { return false; }
 }
 
-// ================= СТАТИСТИКА ОЧЕРЕДИ =================
+// ================= СТАТИСТИКА =================
 
 async function getQueueStats() {
-  const [visits, allPhotos] = await Promise.all([
-    getAllVisits(),
-    (async () => {
-      try {
-        const db = await openDB();
-        const tx = db.transaction(STORE_PHOTOS, 'readonly');
-        const r = tx.objectStore(STORE_PHOTOS).getAll();
-        return (await req(r)) || [];
-      } catch (e) { return []; }
-    })()
-  ]);
-
-  const pendingVisits = visits.filter(v => v.status !== 'synced').length;
-  const pendingPhotos = allPhotos.filter(p => p.status !== 'uploaded').length;
+  const visits = await getAllVisits();
+  let photos = [];
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_PHOTOS, 'readonly');
+    const r = tx.objectStore(STORE_PHOTOS).getAll();
+    photos = (await req(r)) || [];
+  } catch (e) {}
 
   return {
-    pendingVisits,
-    pendingPhotos,
+    pendingVisits: visits.filter(v => v.status !== 'synced').length,
+    pendingPhotos: photos.filter(p => p.status !== 'uploaded').length,
     totalVisits: visits.length
   };
 }
@@ -387,7 +328,7 @@ async function getQueueStats() {
 // ================= UUID =================
 
 function uuid() {
-  if (crypto && crypto.randomUUID) return crypto.randomUUID();
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
     const r = Math.random() * 16 | 0;
     const v = c === 'x' ? r : (r & 0x3 | 0x8);
@@ -398,21 +339,14 @@ function uuid() {
 // ================= ЭКСПОРТ =================
 
 window.db = {
-  // drafts
   saveDraft, loadDraft, clearDraft, hasDraft,
-  // meta
   getMeta, setMeta,
-  // справочники
   getReference, setReference,
   getRemarks, setRemarks,
   getMarks, setMarks,
-  // visits
   addVisit, getVisit, updateVisit, getAllVisits, getPendingVisits, deleteVisit,
-  // photos
   addPhoto, getPhoto, updatePhoto, getPhotosForVisit, deletePhoto,
-  // утилиты
   getQueueStats,
   uuid,
-  // низкоуровневый доступ (для отладки)
   _openDB: openDB
 };
