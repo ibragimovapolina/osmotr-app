@@ -156,13 +156,12 @@ async function testNetwork() {
     lines.push('   ОШИБКА: ' + e.message);
   }
 
-  // Тест 4: запись в IndexedDB
+  // Тест 4: запись в IndexedDB (без изменения реальных данных)
   try {
     lines.push('4) Запись в IndexedDB…');
-    await window.db.setReference({ sample: 1 });
-    const r = await window.db.getReference();
-    lines.push('   OK, записано: ' + (r ? Object.keys(r).length : '?'));
-    await window.db.setReference({});
+    await window.db.setMeta('_test_write', Date.now());
+    const v = await window.db.getMeta('_test_write');
+    lines.push('   OK, запись: ' + v);
   } catch (e) {
     lines.push('   ОШИБКА: ' + e.message);
   }
