@@ -537,3 +537,68 @@ p {
 .kv-warning strong {
   color: #8a4a00;
 }
+/* ============ НАСТРОЙКИ ============ */
+.settings-section {
+  margin-bottom: 24px;
+}
+
+.settings-section h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #5f6368;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
+}
+
+.settings-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 0;
+  border-bottom: 1px solid #e8eaed;
+  font-size: 15px;
+}
+
+.settings-item:last-child {
+  border-bottom: none;
+}
+
+.settings-item-label {
+  color: #202124;
+}
+
+.settings-item-value {
+  color: #5f6368;
+  font-size: 14px;
+}
+
+.app-version {
+  text-align: center;
+  color: #5f6368;
+  font-size: 13px;
+  margin-top: 16px;
+  padding: 16px 0;
+}
+
+.update-info {
+  background: #e8f0fe;
+  border: 1px solid #1a73e8;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  color: #1a73e8;
+  font-size: 14px;
+}
+
+.update-info.ok {
+  background: #e6f4ea;
+  border-color: #34a853;
+  color: #137333;
+}
+
+.update-info.error {
+  background: #fce8e6;
+  border-color: #ea4335;
+  color: #c5221f;
+}
