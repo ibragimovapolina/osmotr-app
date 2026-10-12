@@ -45,6 +45,11 @@ async function init() {
 }
 
 async function continueStartup() {
+  // Автосброс зависших синхронизаций при старте
+  if (window.db && window.db.resetStuckSyncing) {
+    window.db.resetStuckSyncing(3).catch(() => {});
+  }
+
   const draft = await checkDraftOnStart();
   state.pendingDraft = draft;
   state.screen = 'home';
@@ -251,6 +256,7 @@ function renderHome(app) {
 
 async function syncAllNow() {
   if (!window.sync) return;
+  // Сначала сбрасываем все попытки — пользователь сам нажал, значит пробуем прямо сейчас
   if (window.sync.resetAllAttempts) await window.sync.resetAllAttempts();
   await window.sync.syncNow();
   await refreshQueueStats();
@@ -274,22 +280,51 @@ function renderQueue(app) {
         const kv = v.payload && v.payload.kvNumber ? v.payload.kvNumber : '—';
         const when = v.createdAt ? new Date(v.createdAt).toLocaleString('ru-RU') : '';
         const attempts = v.attempts || 0;
-        const statusMap = {
-          pending: '⏳ Ожидает отправки',
-          syncing: '📤 Отправляется',
-          error: `❌ Ошибка (попыток: ${attempts}): ` + (v.lastError || '—')
-        };
-        const statusText = statusMap[v.status] || v.status;
+
+        let statusText = '';
+        if (v.status === 'pending') statusText = '⏳ Ожидает отправки';
+        else if (v.status === 'syncing') {
+          if (v.progress && v.progress.stage === 'photos') {
+            const cur = v.progress.current || 0;
+            const tot = v.progress.total || 0;
+            statusText = '📤 Отправка фото: ' + cur + ' из ' + tot;
+          } else if (v.progress && v.progress.stage === 'submit') {
+            statusText = '📤 Отправка данных осмотра…';
+          } else {
+            statusText = '📤 Отправляется…';
+          }
+        } else if (v.status === 'error') {
+          statusText = '❌ Ошибка (попыток: ' + attempts + '): ' + (v.lastError || '—');
+        } else {
+          statusText = v.status;
+        }
+
         return `
           <div class="object-card">
             <div class="object-title">Квартира ${escapeHtml(kv)}</div>
             <p style="font-size:14px;color:#5f6368;margin-bottom:8px;">${escapeHtml(when)}</p>
-            <p style="font-size:14px;color:#5f6368;">${escapeHtml(statusText)}</p>
+            <p style="font-size:14px;color:${v.status === 'error' ? '#c5221f' : '#5f6368'};">${escapeHtml(statusText)}</p>
             <button class="btn btn-secondary" style="margin-top:8px;" onclick="deleteQueuedVisit('${escapeAttr(v.clientId)}')">🗑 Удалить из очереди</button>
           </div>
         `;
       }).join('')
     : '<div class="hint">Очередь пуста.</div>';
+
+  app.innerHTML = `
+    <div class="card">
+      <div class="step-header">
+        <h2>Очередь отправки</h2>
+        <p>Всего в очереди: ${pending.length}</p>
+      </div>
+      ${itemsHtml}
+      ${pending.length ? `
+        <button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="resetAttemptsNow()">🔄 Сбросить попытки</button>
+      ` : ''}
+      ${pending.length && navigator.onLine ? `<button class="btn btn-primary btn-large" style="margin-top:8px;" onclick="syncAllNow()">📤 Отправить всё сейчас</button>` : ''}
+      <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
+    </div>
+  `;
+}
 
   app.innerHTML = `
     <div class="card">
