@@ -23,33 +23,28 @@ const state = {
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
-  try {
-    // Определяем email — через API Apps Script
-    const emailRes = await apiCall('ping', {});
-    state.user = { email: 'осмотрщик' }; // email подтянется при отправке
-    state.screen = 'home';
-    render();
-  } catch (err) {
-    state.screen = 'error';
-    state.errorMessage = err.message || String(err);
-    render();
-  }
+  state.user = { email: 'осмотрщик' };
+  state.screen = 'home';
+  render();
 }
 
-// ================= API (JSONP) =================
+// ================= API =================
 let _jsonpCounter = 0;
+let _iframeCounter = 0;
 
-function apiCall(action, payload) {
+// GET-запрос через JSONP (для лёгких данных)
+function apiGet(action, payload) {
   return new Promise((resolve, reject) => {
     const callbackName = 'jsonp_cb_' + (++_jsonpCounter) + '_' + Date.now();
 
-    // Создаём глобальный колбэк
-    window[callbackName] = function (result) {
-      // Очищаем
+    const cleanup = () => {
       try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
       const script = document.getElementById(callbackName);
       if (script) script.remove();
+    };
 
+    window[callbackName] = function (result) {
+      cleanup();
       if (result && result.ok === false) {
         reject(new Error(result.error || 'Неизвестная ошибка'));
         return;
@@ -57,7 +52,6 @@ function apiCall(action, payload) {
       resolve(result);
     };
 
-    // Строим URL
     const params = new URLSearchParams();
     params.set('action', action);
     params.set('callback', callbackName);
@@ -65,24 +59,17 @@ function apiCall(action, payload) {
 
     const url = API_URL + '?' + params.toString();
 
-    // Таймаут на случай, если что-то зависнет
     const timeout = setTimeout(() => {
-      try { delete window[callbackName]; } catch (e) {}
-      const s = document.getElementById(callbackName);
-      if (s) s.remove();
+      cleanup();
       reject(new Error('Таймаут запроса'));
     }, 30000);
 
-    // Оборачиваем разрешение/отказ, чтобы очищать таймер
     const originalResolve = resolve;
     const originalReject = reject;
 
     window[callbackName] = function (result) {
       clearTimeout(timeout);
-      try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
-      const script = document.getElementById(callbackName);
-      if (script) script.remove();
-
+      cleanup();
       if (result && result.ok === false) {
         originalReject(new Error(result.error || 'Неизвестная ошибка'));
         return;
@@ -90,18 +77,93 @@ function apiCall(action, payload) {
       originalResolve(result);
     };
 
-    // Создаём <script>
     const script = document.createElement('script');
     script.id = callbackName;
     script.src = url;
     script.onerror = function () {
       clearTimeout(timeout);
-      try { delete window[callbackName]; } catch (e) {}
-      script.remove();
+      cleanup();
       originalReject(new Error('Не удалось загрузить скрипт'));
     };
 
     document.head.appendChild(script);
+  });
+}
+
+// POST-запрос через iframe (для тяжёлых данных: фото, отправка)
+function apiPost(action, payload) {
+  return new Promise((resolve, reject) => {
+    const iframeName = 'iframe_target_' + (++_iframeCounter) + '_' + Date.now();
+
+    const iframe = document.createElement('iframe');
+    iframe.name = iframeName;
+    iframe.id = iframeName;
+    iframe.style.display = 'none';
+    document.body.appendChild(iframe);
+
+    let resolved = false;
+    let timeoutId = null;
+
+    const cleanup = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      window.removeEventListener('message', messageHandler);
+      try { iframe.remove(); } catch (e) {}
+    };
+
+    const messageHandler = function (event) {
+      if (resolved) return;
+      if (!event.data) return;
+
+      let result;
+      try {
+        result = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+      } catch (e) {
+        return;
+      }
+
+      if (!result || result.__action !== action) return;
+
+      resolved = true;
+      cleanup();
+
+      if (result.ok === false) {
+        reject(new Error(result.error || 'Неизвестная ошибка'));
+        return;
+      }
+      resolve(result);
+    };
+
+    window.addEventListener('message', messageHandler);
+
+    timeoutId = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+      reject(new Error('Таймаут запроса (iframe)'));
+    }, 120000);
+
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = API_URL;
+    form.target = iframeName;
+    form.enctype = 'application/x-www-form-urlencoded';
+    form.style.display = 'none';
+
+    const addField = (name, value) => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = value;
+      form.appendChild(input);
+    };
+
+    addField('action', action);
+    addField('payload', JSON.stringify(payload || {}));
+
+    document.body.appendChild(form);
+    form.submit();
+
+    setTimeout(() => { try { form.remove(); } catch (e) {} }, 1000);
   });
 }
 
@@ -188,7 +250,7 @@ function onKvInput(value) {
     const kv = String(value || '').trim();
     if (!kv) { if (result) result.innerHTML = ''; return; }
     try {
-      const res = await apiCall('checkApartment', { kvNumber: kv });
+      const res = await apiGet('checkApartment', { kvNumber: kv });
       const data = res.data || res;
 
       if (data && data.found) {
@@ -309,7 +371,7 @@ async function onRefNext() {
   state.form.apartment = Object.assign({}, apt, edited);
 
   try {
-    const res = await apiCall('getFormData', { apartment: state.form.apartment });
+    const res = await apiGet('getFormData', { apartment: state.form.apartment });
     const data = res.data || res;
     state.form.divisions = data.divisions || [];
     state.form.currentDivisionIndex = 0;
@@ -483,7 +545,7 @@ async function onPhotoSelected(event, stateKey) {
       const compressed = await compressImage(file);
       const fileName = buildFileName(divisionKey, objectKey, i + 1 + rs.photos.length);
 
-      const res = await apiCall('uploadPhoto', {
+      const res = await apiPost('uploadPhoto', {
         base64: compressed,
         fileName: fileName,
         kvNumber: kv
@@ -644,7 +706,7 @@ async function onExtraPhotoSelected(event) {
       const file = files[i];
       const compressed = await compressImage(file);
       const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
-      const res = await apiCall('uploadPhoto', { base64: compressed, fileName: fileName, kvNumber: kv });
+      const res = await apiPost('uploadPhoto', { base64: compressed, fileName: fileName, kvNumber: kv });
       const data = res.data || res;
       state.form.extraPhotos.push({ fileId: data.fileId, url: data.url, name: fileName });
       render();
@@ -760,7 +822,7 @@ async function submitVisit() {
       comments: state.form.comments || ''
     };
 
-    const res = await apiCall('submitVisit', payload);
+    const res = await apiPost('submitVisit', payload);
     const data = res.data || res;
 
     state.screen = 'done';
