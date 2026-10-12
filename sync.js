@@ -1,38 +1,50 @@
-// ================= Движок синхронизации v3 =================
+// ================= Движок синхронизации v4 =================
 //
-// Отправка осмотра: фото через POST → сам осмотр через POST.
-// Никаких «застрял навсегда»: вместо лимита попыток — backoff по времени.
-// Ошибки НЕ удаляют осмотр, он остаётся в очереди до успеха.
+// Отправляет осмотры: фото по одному через POST → сам осмотр через POST.
+// Особенности:
+//  - Таймаут на каждый запрос (60 сек) — не даёт зависнуть.
+//  - Пауза 500 мс между фото — сеть «дышит».
+//  - Wake Lock — вкладка не засыпает, пока идёт отправка.
+//  - Автосброс «зависших» осмотров в статусе syncing (3 мин).
+//  - Прогресс сохраняется в visits.progress — показывается в UI.
 
 const SYNC_INTERVAL_MS = 30 * 1000;
+const REQUEST_TIMEOUT_MS = 60 * 1000;
+const PHOTO_PAUSE_MS = 500;
 
-// Задержки между попытками для одного осмотра (в миллисекундах):
-// после 1-й ошибки — 10 сек, после 2-й — 30 сек, потом 1 мин, 5 мин, 15 мин, 1 час.
-const RETRY_DELAYS = [10 * 1000, 30 * 1000, 60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000, 60 * 60 * 1000];
+const RETRY_DELAYS = [
+  10 * 1000,        // 10 сек
+  30 * 1000,        // 30 сек
+  60 * 1000,        // 1 мин
+  5 * 60 * 1000,    // 5 мин
+  15 * 60 * 1000,   // 15 мин
+  60 * 60 * 1000    // 1 час
+];
 
 let _syncRunning = false;
 let _syncTimer = null;
+let _wakeLock = null;
 
 // ================= ПУБЛИЧНЫЙ API =================
 
 async function syncNow() {
   if (_syncRunning) return { skipped: true, reason: 'already-running' };
   if (!navigator.onLine) return { skipped: true, reason: 'offline' };
+
   _syncRunning = true;
+  await requestWakeLock();
 
   const result = { sent: 0, failed: 0, photos: 0, skipped: 0, errors: [] };
   try {
+    // Автосброс — на всякий случай
+    if (window.db.resetStuckSyncing) await window.db.resetStuckSyncing(3);
+
     const pending = await window.db.getPendingVisits();
     pending.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
 
     for (const visit of pending) {
       if (!navigator.onLine) break;
-
-      // Проверяем — не пора ли пробовать снова
-      if (!shouldRetryNow(visit)) {
-        result.skipped++;
-        continue;
-      }
+      if (!shouldRetryNow(visit)) { result.skipped++; continue; }
 
       try {
         const r = await syncVisit(visit);
@@ -46,12 +58,14 @@ async function syncNow() {
           status: 'error',
           lastError: err.message,
           attempts: attempts,
-          lastAttemptAt: new Date().toISOString()
+          lastAttemptAt: new Date().toISOString(),
+          progress: null
         });
       }
     }
   } finally {
     _syncRunning = false;
+    releaseWakeLock();
     notifyUI();
   }
   return result;
@@ -59,8 +73,8 @@ async function syncNow() {
 
 function shouldRetryNow(visit) {
   if (!visit.lastAttemptAt) return true;
-  const delay = RETRY_DELAYS[Math.min((visit.attempts || 0) - 1, RETRY_DELAYS.length - 1)];
-  if (delay === undefined) return true;
+  const attempts = visit.attempts || 0;
+  const delay = RETRY_DELAYS[Math.min(Math.max(attempts - 1, 0), RETRY_DELAYS.length - 1)];
   const since = Date.now() - new Date(visit.lastAttemptAt).getTime();
   return since >= delay;
 }
@@ -73,7 +87,8 @@ async function resetAllAttempts() {
         attempts: 0,
         lastAttemptAt: null,
         status: 'pending',
-        lastError: ''
+        lastError: '',
+        progress: null
       });
     }
   }
@@ -110,19 +125,32 @@ function notifyUI() {
 
 async function syncVisit(visit) {
   console.log('[sync] Начинаем осмотр', visit.clientId, 'кв.', visit.payload && visit.payload.kvNumber);
-  await window.db.updateVisit(visit.clientId, { status: 'syncing' });
+  await window.db.updateVisit(visit.clientId, {
+    status: 'syncing',
+    syncingStartedAt: new Date().toISOString(),
+    progress: { stage: 'photos', current: 0, total: 0 }
+  });
 
   let photosUploaded = 0;
 
-  // 1. Загружаем все фото (по одному POST)
+  // 1. Фото
   const photos = await window.db.getPhotosForVisit(visit.clientId);
+  const totalPhotos = photos.length;
+
+  await window.db.updateVisit(visit.clientId, {
+    progress: { stage: 'photos', current: 0, total: totalPhotos }
+  });
+  notifyUI();
+
   const photoMap = {};
 
-  for (const photo of photos) {
+  for (let i = 0; i < photos.length; i++) {
+    const photo = photos[i];
     if (!navigator.onLine) throw new Error('Офлайн, синхронизация прервана');
 
     if (photo.status === 'uploaded' && photo.remote) {
       pushPhotoToMap(photoMap, photo.stateKey, photo.remote);
+      // прогресс — уже загружено, не учитываем в current
       continue;
     }
 
@@ -135,7 +163,13 @@ async function syncVisit(visit) {
       });
       pushPhotoToMap(photoMap, photo.stateKey, remote);
       photosUploaded++;
-      console.log('[sync] Фото загружено:', photo.fileName, '→', remote.fileId);
+
+      await window.db.updateVisit(visit.clientId, {
+        progress: { stage: 'photos', current: i + 1, total: totalPhotos }
+      });
+      notifyUI();
+
+      console.log('[sync] Фото', (i + 1) + '/' + totalPhotos, photo.fileName, '→', remote.fileId);
     } catch (err) {
       await window.db.updatePhoto(photo.photoId, {
         status: 'error',
@@ -144,20 +178,31 @@ async function syncVisit(visit) {
       });
       throw new Error('Ошибка загрузки фото: ' + err.message);
     }
+
+    // Пауза между фото
+    if (i < photos.length - 1) {
+      await sleep(PHOTO_PAUSE_MS);
+    }
   }
 
-  // 2. Собираем payload с URL фото
+  // 2. Собираем payload с URL
   const payload = buildPayloadWithPhotos(visit.payload, photoMap);
   payload.clientId = visit.clientId;
 
-  // 3. Отправляем сам осмотр ЧЕРЕЗ POST
+  await window.db.updateVisit(visit.clientId, {
+    progress: { stage: 'submit', current: 0, total: 0 }
+  });
+  notifyUI();
+
+  // 3. Отправляем сам осмотр
   const res = await postApi('submitVisit', payload);
   const data = (res && res.data) ? res.data : res;
 
   await window.db.updateVisit(visit.clientId, {
     status: 'synced',
     syncedAt: new Date().toISOString(),
-    serverRow: (data && data.row) || null
+    serverRow: (data && data.row) || null,
+    progress: null
   });
 
   // 4. Удаляем отправленные фото
@@ -166,7 +211,7 @@ async function syncVisit(visit) {
   }
 
   console.log('[sync] ✅ Осмотр отправлен:', visit.clientId, 'строка', (data && data.row));
-  return { photosUploaded: photosUploaded };
+  return { photosUploaded };
 }
 
 function pushPhotoToMap(map, stateKey, remote) {
@@ -203,14 +248,25 @@ function buildPayloadWithPhotos(originalPayload, photoMap) {
   });
 }
 
-// ================= POST-ЗАПРОСЫ =================
+// ================= HTTP =================
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+    return response;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function postApi(action, payload) {
-  const response = await fetch(API_URL, {
+  const response = await fetchWithTimeout(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: action, payload: payload })
-  });
+  }, REQUEST_TIMEOUT_MS);
   if (!response.ok) throw new Error('HTTP ' + response.status);
   const text = await response.text();
   return parseResponse(text);
@@ -218,7 +274,7 @@ async function postApi(action, payload) {
 
 async function uploadPhotoPost(blob, fileName, kvNumber) {
   const base64 = await blobToBase64(blob);
-  const response = await fetch(API_URL, {
+  const response = await fetchWithTimeout(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -227,7 +283,7 @@ async function uploadPhotoPost(blob, fileName, kvNumber) {
       fileName: fileName,
       kvNumber: kvNumber
     })
-  });
+  }, REQUEST_TIMEOUT_MS);
   if (!response.ok) throw new Error('HTTP ' + response.status);
   const text = await response.text();
   const result = parseResponse(text);
@@ -247,6 +303,34 @@ function blobToBase64(blob) {
     reader.onerror = () => reject(new Error('Не удалось прочитать Blob'));
     reader.readAsDataURL(blob);
   });
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ================= WAKE LOCK =================
+
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try {
+    if (_wakeLock) return;
+    _wakeLock = await navigator.wakeLock.request('screen');
+    _wakeLock.addEventListener('release', () => {
+      _wakeLock = null;
+    });
+    console.log('[sync] Wake Lock включён');
+  } catch (e) {
+    console.warn('[sync] Wake Lock не удалось:', e.message);
+  }
+}
+
+function releaseWakeLock() {
+  if (_wakeLock) {
+    _wakeLock.release().catch(() => {});
+    _wakeLock = null;
+    console.log('[sync] Wake Lock выключен');
+  }
 }
 
 // ================= ЭКСПОРТ =================
