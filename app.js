@@ -16,7 +16,8 @@ const state = {
     comments: '',
     extraPhotos: []
   },
-  submitResult: null
+  submitResult: null,
+  pendingDraft: null
 };
 
 // ================= СТАРТ =================
@@ -24,6 +25,11 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   state.user = { email: 'осмотрщик' };
+
+  // Проверяем, есть ли сохранённый черновик
+  const draft = await checkDraftOnStart();
+  state.pendingDraft = draft;
+
   state.screen = 'home';
   render();
 }
@@ -147,15 +153,52 @@ function render() {
 
 // ================= ГЛАВНЫЙ ЭКРАН =================
 function renderHome(app) {
+  const hasDraft = !!state.pendingDraft;
+  const draftInfo = hasDraft && state.pendingDraft.form
+    ? `Квартира ${state.pendingDraft.form.kvNumber || '—'}`
+    : '';
+
   app.innerHTML = `
     <div class="user-greeting">
       <div class="avatar">О</div>
       <div class="email">Осмотр квартир</div>
     </div>
+
+    ${hasDraft ? `
+    <div class="card" style="background:#fff8e1;border:1px solid #f9ab00;">
+      <h2 style="margin-bottom:8px;">📋 Незавершённый осмотр</h2>
+      <p style="color:#b06000;font-size:14px;">У вас есть сохранённый черновик: ${escapeHtml(draftInfo)}.</p>
+      <button class="btn btn-primary btn-large" style="margin-top:12px;" onclick="continueDraft()">
+        ▶ Продолжить черновик
+      </button>
+      <button class="btn btn-secondary" style="margin-top:8px;" onclick="discardDraft()">
+        🗑 Удалить черновик
+      </button>
+    </div>
+    ` : ''}
+
     <div class="card">
       <button class="btn btn-primary btn-large" onclick="startNewVisit()">🏠 Новый осмотр</button>
     </div>
   `;
+}
+
+// Продолжить черновик
+async function continueDraft() {
+  if (!state.pendingDraft) return;
+  restoreDraft(state.pendingDraft);
+  state.pendingDraft = null;
+  render();
+  window.scrollTo(0, 0);
+}
+
+// Удалить черновик
+async function discardDraft() {
+  if (window.db && window.db.clearDraft) {
+    await window.db.clearDraft();
+  }
+  state.pendingDraft = null;
+  render();
 }
 
 // ================= ШАГ 1 =================
@@ -166,7 +209,14 @@ function startNewVisit() {
     comments: '', extraPhotos: []
   };
   state.submitResult = null;
+  state.pendingDraft = null;
   state.screen = 'newVisitKv';
+
+  // Удаляем старый черновик
+  if (window.db && window.db.clearDraft) {
+    window.db.clearDraft().catch(() => {});
+  }
+
   render();
 }
 
@@ -237,6 +287,7 @@ function onKvNext() {
   if (!state.form.apartment) return;
   state.screen = 'newVisitRef';
   render();
+  autoSave();
 }
 
 // ================= ШАГ 2 =================
@@ -303,12 +354,14 @@ function renderNewVisitRef(app) {
 
 function onRefEdit(field, value) {
   state.form.editedFields[field] = value;
+  debouncedAutoSave();
 }
 
 function onRefEditRoomsNum(value) {
   state.form.editedFields.roomsNum = value;
   const app = document.getElementById('app');
   renderNewVisitRef(app);
+  debouncedAutoSave();
   setTimeout(() => {
     const input = document.getElementById('roomsNumInput');
     if (input) {
@@ -332,6 +385,7 @@ async function onRefNext() {
     state.screen = 'division';
     render();
     window.scrollTo(0, 0);
+    autoSave();
   } catch (err) {
     alert('Ошибка загрузки разделов: ' + err.message);
   }
@@ -455,6 +509,7 @@ function toggleVariant(stateKey, variant) {
   rs.error = null;
   state.form.results[stateKey] = rs;
   updateObjectCard(stateKey);
+  autoSave();
 }
 
 function toggleNoIssues(stateKey) {
@@ -464,6 +519,7 @@ function toggleNoIssues(stateKey) {
   rs.error = null;
   state.form.results[stateKey] = rs;
   updateObjectCard(stateKey);
+  autoSave();
 }
 
 function onCustomInput(stateKey, value) {
@@ -471,6 +527,7 @@ function onCustomInput(stateKey, value) {
   rs.custom = value;
   rs.error = null;
   state.form.results[stateKey] = rs;
+  debouncedAutoSave();
 }
 
 // ================= ФОТО =================
@@ -499,14 +556,12 @@ async function onPhotoSelected(event, stateKey) {
       const compressed = await compressImage(file);
       const fileName = buildFileName(divisionKey, objectKey, i + 1 + rs.photos.length);
 
-      // 1. Отправляем фото «в никуда»
       await apiPostFireAndForget('uploadPhoto', {
         base64: compressed,
         fileName: fileName,
         kvNumber: kv
       });
 
-      // 2. Проверяем статус — раз в 2 секунды, до 60 раз (120 секунд)
       let uploaded = null;
       for (let attempt = 0; attempt < 60; attempt++) {
         await new Promise(resolve => setTimeout(resolve, 2000));
@@ -538,6 +593,7 @@ async function onPhotoSelected(event, stateKey) {
       });
       state.form.results[stateKey] = rs;
       updateObjectCard(stateKey);
+      autoSave();
     } catch (err) {
       console.error('Ошибка загрузки фото:', err);
       alert('Не удалось загрузить фото: ' + (err.message || err));
@@ -554,6 +610,7 @@ function removePhoto(stateKey, index) {
   rs.photos.splice(index, 1);
   state.form.results[stateKey] = rs;
   updateObjectCard(stateKey);
+  autoSave();
 }
 
 function compressImage(file) {
@@ -664,7 +721,10 @@ function renderExtraInfo(app, div, progressText, isLast) {
   `;
 }
 
-function onCommentsInput(value) { state.form.comments = value; }
+function onCommentsInput(value) {
+  state.form.comments = value;
+  debouncedAutoSave();
+}
 
 async function onExtraPhotoSelected(event) {
   const files = Array.from(event.target.files || []);
@@ -713,6 +773,7 @@ async function onExtraPhotoSelected(event) {
         name: fileName
       });
       render();
+      autoSave();
     } catch (err) {
       console.error('Ошибка загрузки доп. фото:', err);
       alert('Не удалось загрузить фото: ' + (err.message || err));
@@ -726,6 +787,7 @@ function removeExtraPhoto(index) {
   if (!state.form.extraPhotos) return;
   state.form.extraPhotos.splice(index, 1);
   render();
+  autoSave();
 }
 
 // ================= НАВИГАЦИЯ =================
@@ -738,6 +800,7 @@ async function onDivisionNext() {
       state.form.currentDivisionIndex++;
       render();
       window.scrollTo(0, 0);
+      autoSave();
       return;
     }
     await submitVisit();
@@ -794,6 +857,7 @@ async function onDivisionNext() {
     state.form.currentDivisionIndex++;
     render();
     window.scrollTo(0, 0);
+    autoSave();
     return;
   }
 
@@ -828,6 +892,11 @@ async function submitVisit() {
     await apiPostFireAndForget('submitVisit', payload);
     await new Promise(resolve => setTimeout(resolve, 3000));
 
+    // Удаляем черновик — осмотр отправлен
+    if (window.db && window.db.clearDraft) {
+      await window.db.clearDraft();
+    }
+
     state.screen = 'done';
     state.submitResult = { row: null };
     render();
@@ -854,6 +923,77 @@ function renderDone(app) {
       </button>
     </div>
   `;
+}
+
+// ================= АВТОСОХРАНЕНИЕ В INDEXEDDB =================
+let _autoSaveTimeout = null;
+
+// Сохранить черновик немедленно
+function autoSave() {
+  if (!window.db || !window.db.saveDraft) return;
+
+  const draft = {
+    form: {
+      kvNumber: state.form.kvNumber,
+      apartment: state.form.apartment,
+      editedFields: state.form.editedFields,
+      divisions: state.form.divisions,
+      currentDivisionIndex: state.form.currentDivisionIndex,
+      results: state.form.results,
+      comments: state.form.comments,
+      extraPhotos: state.form.extraPhotos
+    },
+    screen: state.screen,
+    savedAt: new Date().toISOString()
+  };
+
+  window.db.saveDraft(draft).catch(err => {
+    console.warn('Не удалось сохранить черновик:', err);
+  });
+}
+
+// Сохранить с задержкой (для текстовых полей)
+function debouncedAutoSave() {
+  if (_autoSaveTimeout) clearTimeout(_autoSaveTimeout);
+  _autoSaveTimeout = setTimeout(() => {
+    autoSave();
+  }, 800);
+}
+
+// Проверить черновик при старте
+async function checkDraftOnStart() {
+  if (!window.db || !window.db.loadDraft) return null;
+  try {
+    const draft = await window.db.loadDraft();
+    if (draft && draft.form && draft.form.kvNumber) {
+      return draft;
+    }
+  } catch (err) {
+    console.warn('checkDraftOnStart:', err);
+  }
+  return null;
+}
+
+// Восстановить черновик в состояние
+function restoreDraft(draft) {
+  if (!draft || !draft.form) return;
+  state.form = {
+    kvNumber: draft.form.kvNumber || '',
+    apartment: draft.form.apartment || null,
+    editedFields: draft.form.editedFields || {},
+    divisions: draft.form.divisions || [],
+    currentDivisionIndex: draft.form.currentDivisionIndex || 0,
+    results: draft.form.results || {},
+    uploading: {},
+    comments: draft.form.comments || '',
+    extraPhotos: draft.form.extraPhotos || []
+  };
+  state.screen = draft.screen || 'newVisitKv';
+
+  // Если пользователь был на шаге 1 без apartment — вернём его на шаг 1
+  if (!state.form.apartment && state.screen === 'newVisitRef') {
+    state.screen = 'newVisitKv';
+  }
 }
 
 // ================= УТИЛИТЫ =================
