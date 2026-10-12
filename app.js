@@ -48,27 +48,8 @@ async function apiGet(action, payload) {
   return parseResponse(text);
 }
 
-async function apiPost(action, payload) {
-  const body = new URLSearchParams();
-  body.set('action', action);
-  body.set('payload', JSON.stringify(payload || {}));
-
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString()
-  });
-  if (!response.ok) throw new Error('HTTP ' + response.status);
-
-  const text = await response.text();
-  return parseResponse(text);
-}
-
-// Универсальный парсер: отдаёт JSON как есть или снимает JSONP-обёртку
 function parseResponse(text) {
   let t = String(text || '').trim();
-
-  // JSONP-обёртка: test({...});
   const match = t.match(/^[a-zA-Z0-9_$]+\((.*)\);?\s*$/s);
   if (match) t = match[1];
 
@@ -450,7 +431,7 @@ function onCustomInput(stateKey, value) {
   debouncedAutoSave();
 }
 
-// ================= ФОТО =================
+// ================= ФОТО — ЗАГРУЗКА ЧАСТЯМИ =================
 async function onPhotoSelected(event, stateKey) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
@@ -476,16 +457,11 @@ async function onPhotoSelected(event, stateKey) {
       const compressed = await compressImage(file);
       const fileName = buildFileName(divisionKey, objectKey, i + 1 + rs.photos.length);
 
-      const res = await apiPost('uploadPhoto', {
-        base64: compressed,
-        fileName: fileName,
-        kvNumber: kv
-      });
-      const data = res.data || res;
+      const photoResult = await uploadPhotoInChunks(compressed, fileName, kv);
 
       rs.photos.push({
-        fileId: data.fileId,
-        url: data.url,
+        fileId: photoResult.fileId,
+        url: photoResult.url,
         name: fileName,
         objectKey: objectKey,
         divisionKey: divisionKey
@@ -503,6 +479,44 @@ async function onPhotoSelected(event, stateKey) {
   updateObjectCard(stateKey);
 }
 
+// Универсальная функция загрузки фото частями
+async function uploadPhotoInChunks(base64, fileName, kvNumber) {
+  const uploadId = 'up_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
+  const CHUNK_SIZE = 1800;
+  const totalChunks = Math.ceil(base64.length / CHUNK_SIZE);
+
+  console.log(`[Chunk] Фото: ${base64.length} символов → ${totalChunks} кусков`);
+
+  let finalResult = null;
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    const start = chunkIndex * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, base64.length);
+    const chunkData = base64.substring(start, end);
+
+    const chunkRes = await apiGet('uploadPhotoChunk', {
+      uploadId: uploadId,
+      chunkIndex: chunkIndex,
+      totalChunks: totalChunks,
+      data: chunkData,
+      fileName: fileName,
+      kvNumber: kvNumber
+    });
+
+    const result = chunkRes.data || chunkRes;
+    if (result && result.fileId) {
+      finalResult = result;
+    }
+
+    console.log(`[Chunk] ${chunkIndex + 1}/${totalChunks} отправлен`);
+  }
+
+  if (!finalResult || !finalResult.fileId) {
+    throw new Error('Фото не собралось из кусков');
+  }
+
+  return finalResult;
+}
+
 function removePhoto(stateKey, index) {
   const rs = state.form.results[stateKey];
   if (!rs || !rs.photos) return;
@@ -518,8 +532,8 @@ function compressImage(file) {
     reader.onload = (e) => {
       const img = new Image();
       img.onload = () => {
-        const MAX_WIDTH = 1200;
-        const MAX_HEIGHT = 1200;
+        const MAX_WIDTH = 700;
+        const MAX_HEIGHT = 700;
         let w = img.width, h = img.height;
         if (w > MAX_WIDTH || h > MAX_HEIGHT) {
           const ratio = Math.min(MAX_WIDTH / w, MAX_HEIGHT / h);
@@ -531,7 +545,7 @@ function compressImage(file) {
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
         const base64 = dataUrl.split(',')[1];
         resolve(base64);
       };
@@ -642,14 +656,13 @@ async function onExtraPhotoSelected(event) {
       const compressed = await compressImage(file);
       const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
 
-      const res = await apiPost('uploadPhoto', {
-        base64: compressed,
-        fileName: fileName,
-        kvNumber: kv
-      });
-      const data = res.data || res;
+      const photoResult = await uploadPhotoInChunks(compressed, fileName, kv);
 
-      state.form.extraPhotos.push({ fileId: data.fileId, url: data.url, name: fileName });
+      state.form.extraPhotos.push({
+        fileId: photoResult.fileId,
+        url: photoResult.url,
+        name: fileName
+      });
       render();
       autoSave();
     } catch (err) {
@@ -763,7 +776,7 @@ async function submitVisit() {
       comments: state.form.comments || ''
     };
 
-    await apiPost('submitVisit', payload);
+    await apiGet('submitVisit', payload);
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     if (window.db && window.db.clearDraft) await window.db.clearDraft();
