@@ -419,3 +419,121 @@ p {
   margin-bottom: 16px;
   text-align: center;
 }
+/* ============ СПИСОК ОСМОТРОВ ============ */
+.visits-filter {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.visits-filter .filter-btn {
+  flex: 1;
+  min-width: 90px;
+  padding: 10px 12px;
+  border: 2px solid #e8eaed;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 14px;
+  font-family: inherit;
+  color: #202124;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-weight: 500;
+}
+
+.visits-filter .filter-btn.active {
+  background: #1a73e8;
+  color: #fff;
+  border-color: #1a73e8;
+}
+
+.visit-card {
+  background: #fff;
+  border: 1px solid #e8eaed;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  cursor: pointer;
+}
+
+.visit-card-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.visit-card-kv {
+  color: #202124;
+}
+
+.visit-card-status {
+  font-size: 13px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 12px;
+}
+
+.visit-card-status.synced {
+  background: #e6f4ea;
+  color: #137333;
+}
+
+.visit-card-status.pending {
+  background: #e8f0fe;
+  color: #1a73e8;
+}
+
+.visit-card-status.error {
+  background: #fce8e6;
+  color: #c5221f;
+}
+
+.visit-card-sub {
+  font-size: 13px;
+  color: #5f6368;
+  margin-top: 4px;
+}
+
+.visit-card-details {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e8eaed;
+  font-size: 14px;
+  color: #5f6368;
+}
+
+.visit-card-details p {
+  margin-bottom: 6px;
+  color: #5f6368;
+}
+
+.visit-card-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}
+
+.visit-card-actions button {
+  flex: 1;
+  min-height: 40px;
+  padding: 8px 12px;
+  font-size: 14px;
+}
+
+.kv-warning {
+  background: #fef7e0;
+  border: 1px solid #f9ab00;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 12px;
+  color: #b06000;
+  font-size: 14px;
+}
+
+.kv-warning strong {
+  color: #8a4a00;
+}
