@@ -3,7 +3,7 @@ const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
-  user: null,
+  user: { name: '' },
   screen: 'loading',
   form: {
     kvNumber: '',
@@ -18,16 +18,33 @@ const state = {
   },
   submitResult: null,
   pendingDraft: null,
-  queueStats: { pendingVisits: 0, pendingPhotos: 0, totalVisits: 0 },
+  queueStats: { pendingVisits: 0, pendingPhotos: 0, totalVisits: 0, syncedVisits: 0 },
   queueList: [],
-  draftId: null
+  draftId: null,
+  nameMode: 'first'  // 'first' — при первом запуске, 'change' — смена имени
 };
 
 // ================= СТАРТ =================
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
-  state.user = { email: 'осмотрщик' };
+  // Загружаем имя
+  const savedName = await window.db.getUserName();
+  state.user.name = savedName || '';
+
+  if (!state.user.name) {
+    // Имени нет — показываем экран ввода
+    state.nameMode = 'first';
+    state.screen = 'name';
+    render();
+    return;
+  }
+
+  // Имя есть — идём дальше
+  await continueStartup();
+}
+
+async function continueStartup() {
   const draft = await checkDraftOnStart();
   state.pendingDraft = draft;
   state.screen = 'home';
@@ -108,12 +125,83 @@ function render() {
     `;
     return;
   }
+  if (state.screen === 'name')        return renderNameInput(app);
   if (state.screen === 'home')        return renderHome(app);
   if (state.screen === 'newVisitKv')  return renderNewVisitKv(app);
   if (state.screen === 'newVisitRef') return renderNewVisitRef(app);
   if (state.screen === 'division')    return renderDivision(app);
   if (state.screen === 'saved')       return renderSaved(app);
   if (state.screen === 'queue')       return renderQueue(app);
+}
+
+// ================= ЭКРАН ИМЕНИ =================
+function renderNameInput(app) {
+  const isFirst = state.nameMode === 'first';
+  const currentName = state.user.name || '';
+
+  app.innerHTML = `
+    <div class="user-greeting">
+      <div class="avatar">👤</div>
+      <div class="email">${isFirst ? 'Добро пожаловать!' : 'Смена имени'}</div>
+    </div>
+    <div class="card">
+      <div class="step-header">
+        <h2>${isFirst ? 'Как вас зовут?' : 'Изменить имя'}</h2>
+        <p>Имя будет записано в таблицу вместе с осмотром.</p>
+      </div>
+      <label class="field-label">Ваше имя</label>
+      <input id="nameInput" class="field-input" type="text" autocomplete="off"
+             placeholder="Например: Иванов И.И."
+             value="${escapeHtml(currentName)}"
+             oninput="onNameInput(this.value)">
+      <button class="btn btn-primary btn-large" id="nameSaveBtn"
+              onclick="onSaveName()" ${currentName.trim() ? '' : 'disabled'}>
+        ${isFirst ? 'Сохранить и продолжить' : 'Сохранить'}
+      </button>
+      ${!isFirst ? `<button class="btn btn-secondary" onclick="cancelNameChange()">← Отмена</button>` : ''}
+    </div>
+  `;
+  setTimeout(() => { const i = document.getElementById('nameInput'); if (i) i.focus(); }, 100);
+}
+
+function onNameInput(value) {
+  const btn = document.getElementById('nameSaveBtn');
+  if (btn) btn.disabled = !String(value || '').trim();
+}
+
+async function onSaveName() {
+  const input = document.getElementById('nameInput');
+  const name = String((input && input.value) || '').trim();
+  if (!name) {
+    alert('Пожалуйста, введите имя.');
+    return;
+  }
+  await window.db.setUserName(name);
+  state.user.name = name;
+
+  if (state.nameMode === 'change') {
+    state.nameMode = 'first';
+    state.screen = 'home';
+    await refreshQueueStats();
+    render();
+    alert('Имя сохранено: ' + name);
+  } else {
+    // Первый запуск — продолжаем старт
+    await continueStartup();
+  }
+}
+
+function cancelNameChange() {
+  state.nameMode = 'first';
+  state.screen = 'home';
+  render();
+}
+
+function openNameChange() {
+  state.nameMode = 'change';
+  state.screen = 'name';
+  render();
+  window.scrollTo(0, 0);
 }
 
 // ================= ГЛАВНЫЙ ЭКРАН =================
@@ -127,8 +215,9 @@ function renderHome(app) {
 
   app.innerHTML = `
     <div class="user-greeting">
-      <div class="avatar">О</div>
-      <div class="email">Осмотр квартир</div>
+      <div class="avatar">${escapeHtml((state.user.name || '?').charAt(0).toUpperCase())}</div>
+      <div class="email">👤 ${escapeHtml(state.user.name || '—')}</div>
+      <button class="btn btn-secondary" style="margin-top:12px;max-width:220px;margin-left:auto;margin-right:auto;" onclick="openNameChange()">⚙ Сменить имя</button>
     </div>
 
     <div class="card" style="padding:12px 16px;background:${online ? '#e6f4ea' : '#fce8e6'};border:1px solid ${online ? '#34a853' : '#ea4335'};">
@@ -162,7 +251,6 @@ function renderHome(app) {
 
 async function syncAllNow() {
   if (!window.sync) return;
-  // Сбрасываем попытки, чтобы не застряло
   if (window.sync.resetAllAttempts) await window.sync.resetAllAttempts();
   await window.sync.syncNow();
   await refreshQueueStats();
@@ -231,7 +319,6 @@ async function resetAttemptsNow() {
 async function deleteQueuedVisit(clientId) {
   if (!confirm('Удалить осмотр из очереди? Данные и фото не будут отправлены.')) return;
 
-  // Сначала удаляем все фото этого осмотра
   try {
     const photos = await window.db.getPhotosForVisit(clientId);
     for (const p of photos) {
@@ -239,7 +326,6 @@ async function deleteQueuedVisit(clientId) {
     }
   } catch (e) { console.warn('Не удалось удалить фото:', e); }
 
-  // Потом сам осмотр
   if (window.db && window.db.deleteVisit) {
     await window.db.deleteVisit(clientId);
   }
@@ -267,13 +353,15 @@ async function showDiagnostics() {
 
     alert(
       '🔍 Диагностика IndexedDB\n\n' +
+      'Пользователь: ' + (state.user.name || '—') + '\n\n' +
       'Хранилища (' + stores.length + '):\n' + stores.join(', ') + '\n\n' +
       'Справочник: ' + refCount + ' квартир\n' +
       'Замечания: ' + remCount + ' типов\n' +
       'Марки окон: ' + marksCount + '\n' +
       'Версия данных: ' + (version ? JSON.stringify(version) : '—') + '\n\n' +
       'Очередь осмотров: ' + stats.pendingVisits + '\n' +
-      'Очередь фото: ' + stats.pendingPhotos + '\n\n' +
+      'Очередь фото: ' + stats.pendingPhotos + '\n' +
+      'Всего осмотров: ' + stats.totalVisits + ' (синхр.: ' + stats.syncedVisits + ')\n\n' +
       'Сеть: ' + (navigator.onLine ? 'онлайн' : 'офлайн')
     );
   } catch (err) {
@@ -290,6 +378,7 @@ async function continueDraft() {
 }
 
 async function discardDraft() {
+  if (!confirm('Удалить черновик?')) return;
   if (state.draftId) {
     try {
       const photos = await window.db.getPhotosForVisit(state.draftId);
@@ -500,7 +589,6 @@ async function getFormDataSmart(apartment) {
     const res = await apiGet('getFormData', { apartment: apartment });
     return res.data || res;
   } catch (netErr) {
-    // Фолбэк на локальную сборку из кэша
     console.warn('[form] Сеть недоступна, собираем форму локально:', netErr.message);
     const remarks = await window.db.getRemarks();
     if (remarks && window.localForm && window.localForm.buildFormData) {
@@ -640,7 +728,7 @@ function onCustomInput(stateKey, value) {
   debouncedAutoSave();
 }
 
-// ================= ФОТО (локальное сохранение) =================
+// ================= ФОТО =================
 async function onPhotoSelected(event, stateKey) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
@@ -706,6 +794,7 @@ async function onPhotoSelected(event, stateKey) {
 function removePhoto(stateKey, index) {
   const rs = state.form.results[stateKey];
   if (!rs || !rs.photos) return;
+  if (!confirm('Удалить это фото?')) return;
   const photo = rs.photos[index];
   if (photo && photo.photoId && window.db && window.db.deletePhoto) {
     window.db.deletePhoto(photo.photoId).catch(() => {});
@@ -887,6 +976,7 @@ async function onExtraPhotoSelected(event) {
 
 function removeExtraPhoto(index) {
   if (!state.form.extraPhotos) return;
+  if (!confirm('Удалить это фото?')) return;
   const photo = state.form.extraPhotos[index];
   if (photo && photo.photoId && window.db && window.db.deletePhoto) {
     window.db.deletePhoto(photo.photoId).catch(() => {});
@@ -1000,7 +1090,7 @@ async function submitVisit() {
     });
 
     const payload = {
-      email: (state.user && state.user.email) || '',
+      email: state.user.name || 'осмотрщик',
       kvNumber: state.form.kvNumber,
       results: cleanResults,
       extraPhotos: (state.form.extraPhotos || []).map(p => ({
