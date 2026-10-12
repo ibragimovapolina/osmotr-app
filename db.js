@@ -332,6 +332,8 @@ function uuid() {
 // ================= ТИХОЕ ОБНОВЛЕНИЕ СПРАВОЧНИКА =================
 async function silentUpdateReference() {
   if (!navigator.onLine) return false;
+   const existingRef = await getReference();
+  const refEmpty = !existingRef || Object.keys(existingRef).length === 0;
   if (typeof apiGet !== 'function') {
     console.warn('[sync] apiGet ещё не загружен');
     return false;
@@ -346,7 +348,8 @@ async function silentUpdateReference() {
       String(serverVersion.reference) === '0' ||
       String(serverVersion.reference) === '';
 
-    const same =
+ const same =
+      !refEmpty &&
       !noVersionYet &&
       localVersion &&
       localVersion.reference === serverVersion.reference &&
