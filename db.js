@@ -345,9 +345,15 @@ async function silentUpdateReference() {
     const serverVersion = (ver && ver.data) ? ver.data : ver;
     const localVersion = await getMeta('version');
 
+    // Если версия 0 или её нет — качаем всегда (один раз)
+    const noVersionYet =
+      !serverVersion ||
+      String(serverVersion.reference) === '0' ||
+      String(serverVersion.reference) === '';
+
     const same =
+      !noVersionYet &&
       localVersion &&
-      serverVersion &&
       localVersion.reference === serverVersion.reference &&
       localVersion.remarks === serverVersion.remarks &&
       localVersion.marks === serverVersion.marks;
@@ -356,6 +362,30 @@ async function silentUpdateReference() {
       console.log('[sync] Версии совпадают, обновление не нужно');
       return false;
     }
+
+    console.log('[sync] Тянем справочник…');
+    const refRes = await apiGet('getReference');
+    const refData = (refRes && refRes.data) ? refRes.data : refRes;
+    await setReference(refData);
+
+    console.log('[sync] Тянем правила замечаний…');
+    const remRes = await apiGet('getRemarks');
+    const remData = (remRes && remRes.data) ? remRes.data : remRes;
+    await setRemarks(remData);
+
+    console.log('[sync] Тянем марки окон…');
+    const markRes = await apiGet('getMarks');
+    const markData = (markRes && markRes.data) ? markRes.data : markRes;
+    await setMarks(markData);
+
+    await setMeta('version', serverVersion);
+    console.log('[sync] Готово. Справочник:', Object.keys(refData).length, 'квартир');
+    return true;
+  } catch (err) {
+    console.warn('[sync] silentUpdateReference:', err.message);
+    return false;
+  }
+}
 
     console.log('[sync] Тянем справочник…');
     const refRes = await apiGet('getReference');
