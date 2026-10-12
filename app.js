@@ -36,23 +36,73 @@ async function init() {
   }
 }
 
-// ================= API =================
-async function apiCall(action, payload) {
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(Object.assign({ action: action }, payload))
+// ================= API (JSONP) =================
+let _jsonpCounter = 0;
+
+function apiCall(action, payload) {
+  return new Promise((resolve, reject) => {
+    const callbackName = 'jsonp_cb_' + (++_jsonpCounter) + '_' + Date.now();
+
+    // Создаём глобальный колбэк
+    window[callbackName] = function (result) {
+      // Очищаем
+      try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
+      const script = document.getElementById(callbackName);
+      if (script) script.remove();
+
+      if (result && result.ok === false) {
+        reject(new Error(result.error || 'Неизвестная ошибка'));
+        return;
+      }
+      resolve(result);
+    };
+
+    // Строим URL
+    const params = new URLSearchParams();
+    params.set('action', action);
+    params.set('callback', callbackName);
+    params.set('payload', JSON.stringify(payload || {}));
+
+    const url = API_URL + '?' + params.toString();
+
+    // Таймаут на случай, если что-то зависнет
+    const timeout = setTimeout(() => {
+      try { delete window[callbackName]; } catch (e) {}
+      const s = document.getElementById(callbackName);
+      if (s) s.remove();
+      reject(new Error('Таймаут запроса'));
+    }, 30000);
+
+    // Оборачиваем разрешение/отказ, чтобы очищать таймер
+    const originalResolve = resolve;
+    const originalReject = reject;
+
+    window[callbackName] = function (result) {
+      clearTimeout(timeout);
+      try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
+      const script = document.getElementById(callbackName);
+      if (script) script.remove();
+
+      if (result && result.ok === false) {
+        originalReject(new Error(result.error || 'Неизвестная ошибка'));
+        return;
+      }
+      originalResolve(result);
+    };
+
+    // Создаём <script>
+    const script = document.createElement('script');
+    script.id = callbackName;
+    script.src = url;
+    script.onerror = function () {
+      clearTimeout(timeout);
+      try { delete window[callbackName]; } catch (e) {}
+      script.remove();
+      originalReject(new Error('Не удалось загрузить скрипт'));
+    };
+
+    document.head.appendChild(script);
   });
-
-  if (!response.ok) {
-    throw new Error('HTTP ' + response.status);
-  }
-
-  const result = await response.json();
-  if (result.ok === false) {
-    throw new Error(result.error || 'Неизвестная ошибка');
-  }
-  return result;
 }
 
 // ================= РЕНДЕРИНГ =================
