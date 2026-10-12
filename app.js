@@ -272,7 +272,6 @@ async function showSettings() {
 }
 
 async function renderSettings(app) {
-  // Собираем статистику
   let refCount = 0, photoQueue = 0;
   try {
     const ref = await window.db.getReference();
@@ -361,7 +360,13 @@ async function renderSettings(app) {
   `;
 }
 
-// Обновить справочник — тянем всё из GAS и сохраняем локально
+async function openNameChange() {
+  state.nameMode = 'change';
+  state.screen = 'name';
+  render();
+  window.scrollTo(0, 0);
+}
+
 async function updateReferenceNow() {
   if (!navigator.onLine) {
     state.settingsMessage = { type: 'error', text: 'Нет интернета. Подключитесь и попробуйте снова.' };
@@ -389,7 +394,6 @@ async function updateReferenceNow() {
     const markData = (markRes && markRes.data) ? markRes.data : markRes;
     await window.db.setMarks(markData);
 
-    // Обновляем локальную версию данных
     try {
       const verRes = await apiGet('getVersion');
       const verData = (verRes && verRes.data) ? verRes.data : verRes;
@@ -407,7 +411,6 @@ async function updateReferenceNow() {
   render();
 }
 
-// Обновить приложение — снять Service Worker, очистить кэш, перезагрузить
 async function updateAppNow() {
   if (!confirm('Обновить приложение? Страница перезагрузится, данные осмотров сохранятся.')) return;
 
@@ -415,7 +418,6 @@ async function updateAppNow() {
     state.settingsMessage = { type: '', text: 'Обновление приложения…' };
     render();
 
-    // 1. Снимаем регистрацию Service Worker
     if ('serviceWorker' in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
       for (const r of regs) {
@@ -423,7 +425,6 @@ async function updateAppNow() {
       }
     }
 
-    // 2. Очищаем кэш
     if ('caches' in window) {
       const keys = await caches.keys();
       for (const k of keys) {
@@ -431,17 +432,13 @@ async function updateAppNow() {
       }
     }
 
-    // 3. Перезагружаем с обходом кэша
-    setTimeout(() => {
-      location.reload();
-    }, 500);
+    setTimeout(() => { location.reload(); }, 500);
   } catch (err) {
     state.settingsMessage = { type: 'error', text: 'Ошибка обновления: ' + err.message };
     render();
   }
 }
 
-// Экспорт CSV из настроек — берём все видимые осмотры
 async function exportVisitsCsvFromSettings() {
   try {
     const rows = await window.db.getVisibleVisits();
@@ -777,15 +774,6 @@ function startNewVisit() {
 }
 
 function renderNewVisitKv(app) {
-  const warning = state.kvWarning;
-  const warningHtml = warning ? `
-    <div class="kv-warning">
-      ${warning.type === 'synced'
-        ? `<strong>⚠ Квартира уже осматривалась.</strong><br>Дата: ${escapeHtml(warning.date)}<br>Осмотрщик: ${escapeHtml(warning.userName)}<br><br>Вы можете осмотреть её ещё раз — ничего не блокируется.`
-        : `<strong>⏳ Квартира уже в очереди на отправку.</strong><br>Дата: ${escapeHtml(warning.date)}<br>Осмотрщик: ${escapeHtml(warning.userName)}<br><br>Если это повторный осмотр — можно продолжить.`}
-    </div>
-  ` : '';
-
   app.innerHTML = `
     <div class="card">
       <div class="step-header">
@@ -798,7 +786,6 @@ function renderNewVisitKv(app) {
              placeholder="Например: 42" value="${escapeHtml(state.form.kvNumber)}"
              oninput="onKvInput(this.value)">
       <div id="kvResult"></div>
-      ${warningHtml}
       <button class="btn btn-primary btn-large" id="kvNextBtn" onclick="onKvNext()" disabled>Далее →</button>
       <button class="btn btn-secondary" onclick="goHome()">← Отмена</button>
     </div>
@@ -840,16 +827,69 @@ function onKvInput(value) {
           state.kvWarning = null;
         }
 
-        render();
+        // ТОЧЕЧНО обновляем блок превью, не перерисовывая страницу
+        renderKvResultBlock();
+        if (btn) btn.disabled = false;
       } else {
         state.form.apartment = null;
         state.kvWarning = null;
         if (result) result.innerHTML = `<div class="apartment-not-found">⚠ Квартира "${escapeHtml(kv)}" не найдена в справочнике.</div>`;
+        removeKvWarningBlock();
       }
     } catch (err) {
       if (result) result.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+      removeKvWarningBlock();
     }
   }, 400);
+}
+
+// ТОЧЕЧНО обновляет блок превью + предупреждение, не перерисовывая всю страницу
+function renderKvResultBlock() {
+  const result = document.getElementById('kvResult');
+  if (!result) return;
+  const apt = state.form.apartment;
+  if (!apt) { result.innerHTML = ''; removeKvWarningBlock(); return; }
+
+  result.innerHTML = `
+    <div class="apartment-preview">
+      <div class="apartment-preview-title">✓ Найдено в справочнике</div>
+      <div class="apartment-preview-grid">
+        <div><span>Площадь:</span> ${escapeHtml(apt.area || '—')}</div>
+        <div><span>Этаж:</span> ${escapeHtml(apt.floor || '—')}</div>
+        <div><span>Комнат:</span> ${escapeHtml(apt.roomsNum || '—')}</div>
+        <div><span>Санузлов:</span> ${escapeHtml(apt.bathrooms || '—')}</div>
+      </div>
+    </div>
+  `;
+
+  const warning = state.kvWarning;
+  let warningEl = document.getElementById('kvWarningBlock');
+
+  if (warning) {
+    const warningHtml = `
+      <div class="kv-warning">
+        ${warning.type === 'synced'
+          ? `<strong>⚠ Квартира уже осматривалась.</strong><br>Дата: ${escapeHtml(warning.date)}<br>Осмотрщик: ${escapeHtml(warning.userName)}<br><br>Вы можете осмотреть её ещё раз — ничего не блокируется.`
+          : `<strong>⏳ Квартира уже в очереди на отправку.</strong><br>Дата: ${escapeHtml(warning.date)}<br>Осмотрщик: ${escapeHtml(warning.userName)}<br><br>Если это повторный осмотр — можно продолжить.`}
+      </div>
+    `;
+    if (warningEl) {
+      warningEl.innerHTML = warningHtml;
+    } else {
+      const div = document.createElement('div');
+      div.id = 'kvWarningBlock';
+      div.innerHTML = warningHtml;
+      const parent = result.parentNode;
+      parent.insertBefore(div, result.nextSibling);
+    }
+  } else {
+    removeKvWarningBlock();
+  }
+}
+
+function removeKvWarningBlock() {
+  const el = document.getElementById('kvWarningBlock');
+  if (el) el.remove();
 }
 
 async function checkApartmentSmart(kv) {
