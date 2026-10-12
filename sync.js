@@ -125,7 +125,7 @@ async function syncVisit(visit) {
 
   // 3. Отправляем осмотр
   payload.clientId = visit.clientId;
-  const res = await apiGet('submitVisit', payload);
+  const res = await postApi('submitVisit', payload);
   const data = (res && res.data) ? res.data : res;
 
   await window.db.updateVisit(visit.clientId, {
