@@ -21,31 +21,27 @@ const state = {
   queueStats: { pendingVisits: 0, pendingPhotos: 0, totalVisits: 0, syncedVisits: 0 },
   queueList: [],
   draftId: null,
-  nameMode: 'first'  // 'first' — при первом запуске, 'change' — смена имени
+  nameMode: 'first'
 };
 
 // ================= СТАРТ =================
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
-  // Загружаем имя
   const savedName = await window.db.getUserName();
   state.user.name = savedName || '';
 
   if (!state.user.name) {
-    // Имени нет — показываем экран ввода
     state.nameMode = 'first';
     state.screen = 'name';
     render();
     return;
   }
 
-  // Имя есть — идём дальше
   await continueStartup();
 }
 
 async function continueStartup() {
-  // Автосброс зависших синхронизаций при старте
   if (window.db && window.db.resetStuckSyncing) {
     window.db.resetStuckSyncing(3).catch(() => {});
   }
@@ -191,7 +187,6 @@ async function onSaveName() {
     render();
     alert('Имя сохранено: ' + name);
   } else {
-    // Первый запуск — продолжаем старт
     await continueStartup();
   }
 }
@@ -256,7 +251,6 @@ function renderHome(app) {
 
 async function syncAllNow() {
   if (!window.sync) return;
-  // Сначала сбрасываем все попытки — пользователь сам нажал, значит пробуем прямо сейчас
   if (window.sync.resetAllAttempts) await window.sync.resetAllAttempts();
   await window.sync.syncNow();
   await refreshQueueStats();
@@ -309,22 +303,6 @@ function renderQueue(app) {
         `;
       }).join('')
     : '<div class="hint">Очередь пуста.</div>';
-
-  app.innerHTML = `
-    <div class="card">
-      <div class="step-header">
-        <h2>Очередь отправки</h2>
-        <p>Всего в очереди: ${pending.length}</p>
-      </div>
-      ${itemsHtml}
-      ${pending.length ? `
-        <button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="resetAttemptsNow()">🔄 Сбросить попытки</button>
-      ` : ''}
-      ${pending.length && navigator.onLine ? `<button class="btn btn-primary btn-large" style="margin-top:8px;" onclick="syncAllNow()">📤 Отправить всё сейчас</button>` : ''}
-      <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
-    </div>
-  `;
-}
 
   app.innerHTML = `
     <div class="card">
