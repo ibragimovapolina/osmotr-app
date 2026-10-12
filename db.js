@@ -42,7 +42,6 @@ function openDB() {
         const s = db.createObjectStore(STORE_VISITS, { keyPath: 'clientId' });
         s.createIndex('status', 'status', { unique: false });
         s.createIndex('createdAt', 'createdAt', { unique: false });
-        s.createIndex('kvNumber', 'payload.kvNumber', { unique: false });
       }
       if (!db.objectStoreNames.contains(STORE_PHOTOS)) {
         const s = db.createObjectStore(STORE_PHOTOS, { keyPath: 'photoId' });
@@ -252,6 +251,28 @@ async function deleteVisit(clientId) {
   } catch (e) { return false; }
 }
 
+// Автосброс «зависших» осмотров в статусе syncing, старше N минут
+async function resetStuckSyncing(maxAgeMinutes) {
+  const maxAge = (maxAgeMinutes || 3) * 60 * 1000;
+  const now = Date.now();
+  const all = await getAllVisits();
+  let count = 0;
+  for (const v of all) {
+    if (v.status === 'syncing') {
+      const startedAt = v.syncingStartedAt ? new Date(v.syncingStartedAt).getTime() : 0;
+      if (!startedAt || (now - startedAt) > maxAge) {
+        await updateVisit(v.clientId, {
+          status: 'pending',
+          lastError: 'Автосброс: превышено время синхронизации'
+        });
+        count++;
+      }
+    }
+  }
+  if (count > 0) console.log('[db] resetStuckSyncing вернул в pending:', count);
+  return count;
+}
+
 // ================= PHOTOS =================
 async function addPhoto(photo) {
   try {
@@ -311,6 +332,15 @@ async function deletePhoto(photoId) {
       tx.onerror = () => resolve(false);
     });
   } catch (e) { return false; }
+}
+
+// Счётчики фото для прогресса: { total, uploaded }
+async function getPhotoCountsForVisit(visitClientId) {
+  const photos = await getPhotosForVisit(visitClientId);
+  return {
+    total: photos.length,
+    uploaded: photos.filter(p => p.status === 'uploaded').length
+  };
 }
 
 // ================= СТАТИСТИКА =================
@@ -403,7 +433,9 @@ window.db = {
   getRemarks, setRemarks,
   getMarks, setMarks,
   addVisit, getVisit, updateVisit, getAllVisits, getPendingVisits, getSyncedVisits, findVisitsByKv, deleteVisit,
+  resetStuckSyncing,
   addPhoto, getPhoto, updatePhoto, getPhotosForVisit, getAllPhotos, deletePhoto,
+  getPhotoCountsForVisit,
   getQueueStats,
   uuid,
   getUserName, setUserName,
