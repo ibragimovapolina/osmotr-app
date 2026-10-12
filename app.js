@@ -1,5 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
+const APP_VERSION = '1.0.0';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -22,10 +23,11 @@ const state = {
   queueList: [],
   draftId: null,
   nameMode: 'first',
-  visitsFilter: 'all',       // 'all' | 'synced' | 'pending'
+  visitsFilter: 'all',
   visitsList: [],
-  expandedVisitId: null,     // какой осмотр раскрыт в подробностях
-  kvWarning: null            // предупреждение о повторном осмотре
+  expandedVisitId: null,
+  kvWarning: null,
+  settingsMessage: null
 };
 
 // ================= СТАРТ =================
@@ -65,16 +67,16 @@ async function continueStartup() {
   }
 
   window.addEventListener('online', () => {
-    if (['home', 'queue', 'visits'].includes(state.screen)) render();
+    if (['home', 'queue', 'visits', 'settings'].includes(state.screen)) render();
   });
   window.addEventListener('offline', () => {
-    if (['home', 'queue', 'visits'].includes(state.screen)) render();
+    if (['home', 'queue', 'visits', 'settings'].includes(state.screen)) render();
   });
 }
 
 window.onQueueChanged = async function () {
   await refreshQueueStats();
-  if (['home', 'queue', 'visits'].includes(state.screen)) render();
+  if (['home', 'queue', 'visits', 'settings'].includes(state.screen)) render();
 };
 
 async function refreshQueueStats() {
@@ -138,6 +140,7 @@ function render() {
   if (state.screen === 'saved')       return renderSaved(app);
   if (state.screen === 'queue')       return renderQueue(app);
   if (state.screen === 'visits')      return renderVisits(app);
+  if (state.screen === 'settings')    return renderSettings(app);
 }
 
 // ================= ЭКРАН ИМЕНИ =================
@@ -184,8 +187,8 @@ async function onSaveName() {
 
   if (state.nameMode === 'change') {
     state.nameMode = 'first';
-    state.screen = 'home';
-    await refreshQueueStats();
+    state.screen = 'settings';
+    state.settingsMessage = { type: 'ok', text: 'Имя сохранено: ' + name };
     render();
   } else {
     await continueStartup();
@@ -194,15 +197,8 @@ async function onSaveName() {
 
 function cancelNameChange() {
   state.nameMode = 'first';
-  state.screen = 'home';
+  state.screen = 'settings';
   render();
-}
-
-function openNameChange() {
-  state.nameMode = 'change';
-  state.screen = 'name';
-  render();
-  window.scrollTo(0, 0);
 }
 
 // ================= ГЛАВНЫЙ ЭКРАН =================
@@ -218,7 +214,6 @@ function renderHome(app) {
     <div class="user-greeting">
       <div class="avatar">${escapeHtml((state.user.name || '?').charAt(0).toUpperCase())}</div>
       <div class="email">👤 ${escapeHtml(state.user.name || '—')}</div>
-      <button class="btn btn-secondary" style="margin-top:12px;max-width:220px;margin-left:auto;margin-right:auto;" onclick="openNameChange()">⚙ Сменить имя</button>
     </div>
 
     <div class="card" style="padding:12px 16px;background:${online ? '#e6f4ea' : '#fce8e6'};border:1px solid ${online ? '#34a853' : '#ea4335'};">
@@ -246,7 +241,7 @@ function renderHome(app) {
     <div class="card">
       <button class="btn btn-primary btn-large" onclick="startNewVisit()">🏠 Новый осмотр</button>
       <button class="btn btn-secondary" onclick="showVisits()">📋 Мои осмотры</button>
-      <button class="btn btn-secondary" onclick="showDiagnostics()">🔍 Диагностика</button>
+      <button class="btn btn-secondary" onclick="showSettings()">⚙ Настройки</button>
     </div>
   `;
 }
@@ -265,6 +260,195 @@ async function showQueue() {
   state.screen = 'queue';
   render();
   window.scrollTo(0, 0);
+}
+
+// ================= НАСТРОЙКИ =================
+async function showSettings() {
+  state.settingsMessage = null;
+  state.screen = 'settings';
+  await refreshQueueStats();
+  render();
+  window.scrollTo(0, 0);
+}
+
+async function renderSettings(app) {
+  // Собираем статистику
+  let refCount = 0, photoQueue = 0;
+  try {
+    const ref = await window.db.getReference();
+    refCount = ref ? Object.keys(ref).length : 0;
+  } catch (e) {}
+  try {
+    const allPhotos = await window.db.getAllPhotos();
+    photoQueue = allPhotos.filter(p => p.status !== 'uploaded').length;
+  } catch (e) {}
+
+  const version = await window.db.getMeta('version');
+
+  const msgHtml = state.settingsMessage
+    ? `<div class="update-info ${state.settingsMessage.type === 'error' ? 'error' : (state.settingsMessage.type === 'ok' ? 'ok' : '')}">
+         ${escapeHtml(state.settingsMessage.text)}
+       </div>`
+    : '';
+
+  app.innerHTML = `
+    <div class="card">
+      <div class="step-header">
+        <h2>⚙ Настройки</h2>
+      </div>
+
+      ${msgHtml}
+
+      <div class="settings-section">
+        <h3>Профиль</h3>
+        <div class="settings-item">
+          <span class="settings-item-label">👤 Имя осмотрщика</span>
+          <span class="settings-item-value">${escapeHtml(state.user.name || '—')}</span>
+        </div>
+        <button class="btn btn-secondary" style="margin-top:12px;" onclick="openNameChange()">Сменить имя</button>
+      </div>
+
+      <div class="settings-section">
+        <h3>Данные</h3>
+        <div class="settings-item">
+          <span class="settings-item-label">📚 Справочник квартир</span>
+          <span class="settings-item-value">${refCount} шт.</span>
+        </div>
+        <div class="settings-item">
+          <span class="settings-item-label">📋 Осмотров всего</span>
+          <span class="settings-item-value">${state.queueStats.totalVisits || 0}</span>
+        </div>
+        <div class="settings-item">
+          <span class="settings-item-label">📤 В очереди</span>
+          <span class="settings-item-value">${state.queueStats.pendingVisits || 0}</span>
+        </div>
+        <div class="settings-item">
+          <span class="settings-item-label">📷 Фото в очереди</span>
+          <span class="settings-item-value">${photoQueue}</span>
+        </div>
+        <button class="btn btn-primary" style="margin-top:12px;" onclick="updateReferenceNow()">🔄 Обновить справочник</button>
+        <button class="btn btn-secondary" style="margin-top:8px;" onclick="exportVisitsCsvFromSettings()">📥 Скачать осмотры (CSV)</button>
+      </div>
+
+      <div class="settings-section">
+        <h3>Обновление приложения</h3>
+        <p style="font-size:14px;color:#5f6368;margin-bottom:12px;">
+          Если вышли новые функции или исправления — нажмите кнопку. Приложение подтянет свежую версию.
+        </p>
+        <button class="btn btn-primary" onclick="updateAppNow()">🔄 Обновить приложение</button>
+      </div>
+
+      <div class="settings-section">
+        <h3>Диагностика</h3>
+        <div class="settings-item">
+          <span class="settings-item-label">Версия приложения</span>
+          <span class="settings-item-value">${APP_VERSION}</span>
+        </div>
+        <div class="settings-item">
+          <span class="settings-item-label">Версия данных</span>
+          <span class="settings-item-value">${version ? (version.reference || '0') : '—'}</span>
+        </div>
+        <button class="btn btn-secondary" style="margin-top:12px;" onclick="showDiagnostics()">🔍 Диагностика</button>
+      </div>
+
+      <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
+
+      <div class="app-version">
+        Осмотры квартир · v${APP_VERSION}<br>
+        Работает офлайн
+      </div>
+    </div>
+  `;
+}
+
+// Обновить справочник — тянем всё из GAS и сохраняем локально
+async function updateReferenceNow() {
+  if (!navigator.onLine) {
+    state.settingsMessage = { type: 'error', text: 'Нет интернета. Подключитесь и попробуйте снова.' };
+    render();
+    return;
+  }
+
+  state.settingsMessage = { type: '', text: 'Обновление справочника…' };
+  render();
+  window.scrollTo(0, 0);
+
+  try {
+    console.log('[settings] Обновление справочника…');
+    const refRes = await apiGet('getReference');
+    const refData = (refRes && refRes.data) ? refRes.data : refRes;
+    await window.db.setReference(refData);
+
+    console.log('[settings] Обновление правил замечаний…');
+    const remRes = await apiGet('getRemarks');
+    const remData = (remRes && remRes.data) ? remRes.data : remRes;
+    await window.db.setRemarks(remData);
+
+    console.log('[settings] Обновление марок окон…');
+    const markRes = await apiGet('getMarks');
+    const markData = (markRes && markRes.data) ? markRes.data : markRes;
+    await window.db.setMarks(markData);
+
+    // Обновляем локальную версию данных
+    try {
+      const verRes = await apiGet('getVersion');
+      const verData = (verRes && verRes.data) ? verRes.data : verRes;
+      await window.db.setMeta('version', verData);
+    } catch (e) {}
+
+    const count = refData ? Object.keys(refData).length : 0;
+    state.settingsMessage = { type: 'ok', text: '✓ Справочник обновлён: ' + count + ' квартир.' };
+    console.log('[settings] Готово. Квартир:', count);
+  } catch (err) {
+    console.error('[settings] Ошибка обновления справочника:', err);
+    state.settingsMessage = { type: 'error', text: 'Ошибка: ' + err.message };
+  }
+  await refreshQueueStats();
+  render();
+}
+
+// Обновить приложение — снять Service Worker, очистить кэш, перезагрузить
+async function updateAppNow() {
+  if (!confirm('Обновить приложение? Страница перезагрузится, данные осмотров сохранятся.')) return;
+
+  try {
+    state.settingsMessage = { type: '', text: 'Обновление приложения…' };
+    render();
+
+    // 1. Снимаем регистрацию Service Worker
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      for (const r of regs) {
+        try { await r.unregister(); } catch (e) {}
+      }
+    }
+
+    // 2. Очищаем кэш
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      for (const k of keys) {
+        try { await caches.delete(k); } catch (e) {}
+      }
+    }
+
+    // 3. Перезагружаем с обходом кэша
+    setTimeout(() => {
+      location.reload();
+    }, 500);
+  } catch (err) {
+    state.settingsMessage = { type: 'error', text: 'Ошибка обновления: ' + err.message };
+    render();
+  }
+}
+
+// Экспорт CSV из настроек — берём все видимые осмотры
+async function exportVisitsCsvFromSettings() {
+  try {
+    const rows = await window.db.getVisibleVisits();
+    exportVisitsCsvData(rows);
+  } catch (err) {
+    alert('Не удалось экспортировать: ' + err.message);
+  }
 }
 
 // ================= ЭКРАН «МОИ ОСМОТРЫ» =================
@@ -299,15 +483,11 @@ async function hideVisitFromList(clientId) {
 function renderVisits(app) {
   const all = state.visitsList || [];
 
-  // Применяем фильтр
   let filtered = all;
   if (state.visitsFilter === 'synced') filtered = all.filter(v => v.status === 'synced');
   else if (state.visitsFilter === 'pending') filtered = all.filter(v => v.status !== 'synced');
 
-  // Сортировка: свежие сверху
   filtered = filtered.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-
-  // Не больше 200
   const limited = filtered.slice(0, 200);
 
   const filterBtn = (key, label) => `
@@ -394,7 +574,10 @@ function renderVisitCard(v) {
 }
 
 function exportVisitsCsv() {
-  const rows = state.visitsList || [];
+  exportVisitsCsvData(state.visitsList || []);
+}
+
+function exportVisitsCsvData(rows) {
   if (!rows.length) { alert('Нет данных для экспорта.'); return; }
 
   const header = ['Квартира', 'Осмотрщик', 'Дата создания', 'Дата осмотра', 'Статус', 'Комментарии'];
@@ -413,7 +596,7 @@ function exportVisitsCsv() {
     lines.push([kv, userName, created, visited, status, comments].map(csvEscape).join(';'));
   });
 
-  const csv = '\uFEFF' + lines.join('\r\n'); // BOM для Excel + CRLF
+  const csv = '\uFEFF' + lines.join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
 
@@ -537,7 +720,8 @@ async function showDiagnostics() {
     const marksCount = marks ? Object.keys(marks).length : 0;
 
     alert(
-      '🔍 Диагностика IndexedDB\n\n' +
+      '🔍 Диагностика\n\n' +
+      'Версия приложения: ' + APP_VERSION + '\n' +
       'Пользователь: ' + (state.user.name || '—') + '\n\n' +
       'Хранилища (' + stores.length + '):\n' + stores.join(', ') + '\n\n' +
       'Справочник: ' + refCount + ' квартир\n' +
@@ -643,11 +827,8 @@ function onKvInput(value) {
       if (data && data.found) {
         state.form.apartment = data.data;
 
-        // Ищем предыдущие осмотры этой квартиры
         let previous = [];
-        try {
-          previous = await window.db.findVisitsByKv(kv);
-        } catch (e) { /* ignore */ }
+        try { previous = await window.db.findVisitsByKv(kv); } catch (e) {}
 
         if (previous.length > 0) {
           const latest = previous[0];
@@ -669,29 +850,6 @@ function onKvInput(value) {
       if (result) result.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
     }
   }, 400);
-}
-
-// Рендер результата проверки квартиры (без полной перерисовки)
-function renderKvResult() {
-  const result = document.getElementById('kvResult');
-  const btn = document.getElementById('kvNextBtn');
-  if (!result) return;
-
-  const apt = state.form.apartment;
-  if (!apt) { result.innerHTML = ''; if (btn) btn.disabled = true; return; }
-
-  result.innerHTML = `
-    <div class="apartment-preview">
-      <div class="apartment-preview-title">✓ Найдено в справочнике</div>
-      <div class="apartment-preview-grid">
-        <div><span>Площадь:</span> ${escapeHtml(apt.area || '—')}</div>
-        <div><span>Этаж:</span> ${escapeHtml(apt.floor || '—')}</div>
-        <div><span>Комнат:</span> ${escapeHtml(apt.roomsNum || '—')}</div>
-        <div><span>Санузлов:</span> ${escapeHtml(apt.bathrooms || '—')}</div>
-      </div>
-    </div>
-  `;
-  if (btn) btn.disabled = false;
 }
 
 async function checkApartmentSmart(kv) {
