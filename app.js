@@ -19,7 +19,8 @@ const state = {
   submitResult: null,
   pendingDraft: null,
   queueStats: { pendingVisits: 0, pendingPhotos: 0, totalVisits: 0 },
-  queueList: []
+  queueList: [],
+  draftId: null // UUID черновика — используется для привязки фото
 };
 
 // ================= СТАРТ =================
@@ -42,7 +43,6 @@ async function init() {
   }
 }
 
-// Коллбэк из sync.js — когда что-то изменилось в очереди
 window.onQueueChanged = async function () {
   await refreshQueueStats();
   if (state.screen === 'home' || state.screen === 'queue') render();
@@ -251,8 +251,16 @@ async function continueDraft() {
 }
 
 async function discardDraft() {
+  // Удаляем все фото черновика
+  if (state.draftId) {
+    try {
+      const photos = await window.db.getPhotosForVisit(state.draftId);
+      for (const p of photos) await window.db.deletePhoto(p.photoId);
+    } catch (e) {}
+  }
   if (window.db && window.db.clearDraft) await window.db.clearDraft();
   state.pendingDraft = null;
+  state.draftId = null;
   render();
 }
 
@@ -265,6 +273,7 @@ function startNewVisit() {
   };
   state.submitResult = null;
   state.pendingDraft = null;
+  state.draftId = window.db.uuid(); // новый ID черновика
   state.screen = 'newVisitKv';
   if (window.db && window.db.clearDraft) window.db.clearDraft().catch(() => {});
   render();
@@ -587,7 +596,7 @@ function onCustomInput(stateKey, value) {
   debouncedAutoSave();
 }
 
-// ================= ФОТО =================
+// ================= ФОТО (локальное сохранение) =================
 async function onPhotoSelected(event, stateKey) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
@@ -603,6 +612,7 @@ async function onPhotoSelected(event, stateKey) {
   const kv = state.form.kvNumber;
   const divisionKey = stateKey.split('.')[0];
   const objectKey = stateKey.split('.')[1];
+  const draftId = state.draftId || (state.draftId = window.db.uuid());
 
   for (let i = 0; i < files.length; i++) {
     state.form.uploading[stateKey] = { current: i + 1, total: files.length };
@@ -610,14 +620,29 @@ async function onPhotoSelected(event, stateKey) {
 
     try {
       const file = files[i];
-      const compressed = await compressImage(file);
+      const blob = await compressImageToBlob(file);
       const fileName = buildFileName(divisionKey, objectKey, i + 1 + rs.photos.length);
+      const photoId = window.db.uuid();
+      const localUrl = URL.createObjectURL(blob);
 
-      const photoResult = await uploadPhotoInChunks(compressed, fileName, kv);
+      // Сохраняем в IndexedDB
+      await window.db.addPhoto({
+        photoId: photoId,
+        visitClientId: draftId,
+        stateKey: stateKey,
+        fileName: fileName,
+        kvNumber: kv,
+        blob: blob,
+        status: 'pending',
+        attempts: 0,
+        lastError: '',
+        remote: null,
+        localUrl: localUrl
+      });
 
       rs.photos.push({
-        fileId: photoResult.fileId,
-        url: photoResult.url,
+        photoId: photoId,
+        localUrl: localUrl,
         name: fileName,
         objectKey: objectKey,
         divisionKey: divisionKey
@@ -626,8 +651,8 @@ async function onPhotoSelected(event, stateKey) {
       updateObjectCard(stateKey);
       autoSave();
     } catch (err) {
-      console.error('Ошибка загрузки фото:', err);
-      alert('Не удалось загрузить фото: ' + (err.message || err));
+      console.error('Ошибка сохранения фото:', err);
+      alert('Не удалось сохранить фото: ' + (err.message || err));
     }
   }
 
@@ -635,48 +660,21 @@ async function onPhotoSelected(event, stateKey) {
   updateObjectCard(stateKey);
 }
 
-async function uploadPhotoInChunks(base64, fileName, kvNumber) {
-  const uploadId = 'up_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
-  const CHUNK_SIZE = 1800;
-  const totalChunks = Math.ceil(base64.length / CHUNK_SIZE);
-
-  let finalResult = null;
-  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
-    const start = chunkIndex * CHUNK_SIZE;
-    const end = Math.min(start + CHUNK_SIZE, base64.length);
-    const chunkData = base64.substring(start, end);
-
-    const chunkRes = await apiGet('uploadPhotoChunk', {
-      uploadId: uploadId,
-      chunkIndex: chunkIndex,
-      totalChunks: totalChunks,
-      data: chunkData,
-      fileName: fileName,
-      kvNumber: kvNumber
-    });
-
-    const result = chunkRes.data || chunkRes;
-    if (result && result.fileId) {
-      finalResult = result;
-    }
-  }
-
-  if (!finalResult || !finalResult.fileId) {
-    throw new Error('Фото не собралось из кусков');
-  }
-  return finalResult;
-}
-
 function removePhoto(stateKey, index) {
   const rs = state.form.results[stateKey];
   if (!rs || !rs.photos) return;
+  const photo = rs.photos[index];
+  if (photo && photo.photoId && window.db && window.db.deletePhoto) {
+    window.db.deletePhoto(photo.photoId).catch(() => {});
+  }
   rs.photos.splice(index, 1);
   state.form.results[stateKey] = rs;
   updateObjectCard(stateKey);
   autoSave();
 }
 
-function compressImage(file) {
+// Сжатие сразу в Blob (не base64)
+function compressImageToBlob(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -695,9 +693,14 @@ function compressImage(file) {
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
-        const base64 = dataUrl.split(',')[1];
-        resolve(base64);
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) reject(new Error('Не удалось сжать изображение'));
+            else resolve(blob);
+          },
+          'image/jpeg',
+          0.6
+        );
       };
       img.onerror = () => reject(new Error('Не удалось прочитать изображение'));
       img.src = e.target.result;
@@ -798,26 +801,42 @@ async function onExtraPhotoSelected(event) {
   render();
 
   const kv = state.form.kvNumber;
+  const draftId = state.draftId || (state.draftId = window.db.uuid());
+
   for (let i = 0; i < files.length; i++) {
     state.form.uploading['__extra__'] = { current: i + 1, total: files.length };
     render();
     try {
       const file = files[i];
-      const compressed = await compressImage(file);
+      const blob = await compressImageToBlob(file);
       const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
+      const photoId = window.db.uuid();
+      const localUrl = URL.createObjectURL(blob);
 
-      const photoResult = await uploadPhotoInChunks(compressed, fileName, kv);
+      await window.db.addPhoto({
+        photoId: photoId,
+        visitClientId: draftId,
+        stateKey: '__extra__',
+        fileName: fileName,
+        kvNumber: kv,
+        blob: blob,
+        status: 'pending',
+        attempts: 0,
+        lastError: '',
+        remote: null,
+        localUrl: localUrl
+      });
 
       state.form.extraPhotos.push({
-        fileId: photoResult.fileId,
-        url: photoResult.url,
+        photoId: photoId,
+        localUrl: localUrl,
         name: fileName
       });
       render();
       autoSave();
     } catch (err) {
-      console.error('Ошибка загрузки доп. фото:', err);
-      alert('Не удалось загрузить фото: ' + (err.message || err));
+      console.error('Ошибка сохранения доп. фото:', err);
+      alert('Не удалось сохранить фото: ' + (err.message || err));
     }
   }
   delete state.form.uploading['__extra__'];
@@ -826,6 +845,10 @@ async function onExtraPhotoSelected(event) {
 
 function removeExtraPhoto(index) {
   if (!state.form.extraPhotos) return;
+  const photo = state.form.extraPhotos[index];
+  if (photo && photo.photoId && window.db && window.db.deletePhoto) {
+    window.db.deletePhoto(photo.photoId).catch(() => {});
+  }
   state.form.extraPhotos.splice(index, 1);
   render();
   autoSave();
@@ -918,17 +941,42 @@ async function submitVisit() {
   app.innerHTML = '<div class="loading">Сохранение…</div>';
 
   try {
-    const clientId = window.db.uuid();
+    const clientId = state.draftId || window.db.uuid();
+
+    // Переносим фото в очередь осмотра (переименовываем visitClientId)
+    const photos = await window.db.getPhotosForVisit(clientId);
+    for (const p of photos) {
+      await window.db.updatePhoto(p.photoId, { visitClientId: clientId });
+    }
+
+    // Обновляем payload — фото теперь берутся из IndexedDB по clientId,
+    // а в payload.results.photos оставляем только локальные ссылки без url
+    const cleanResults = {};
+    Object.keys(state.form.results).forEach(key => {
+      const rs = state.form.results[key];
+      cleanResults[key] = {
+        selected: rs.selected || [],
+        custom: rs.custom || '',
+        noIssues: rs.noIssues || false,
+        photos: (rs.photos || []).map(p => ({
+          photoId: p.photoId,
+          name: p.name
+        }))
+      };
+    });
+
     const payload = {
       email: (state.user && state.user.email) || '',
       kvNumber: state.form.kvNumber,
-      results: state.form.results,
-      extraPhotos: state.form.extraPhotos || [],
+      results: cleanResults,
+      extraPhotos: (state.form.extraPhotos || []).map(p => ({
+        photoId: p.photoId,
+        name: p.name
+      })),
       comments: state.form.comments || '',
       visitedAt: new Date().toISOString()
     };
 
-    // Кладём в очередь IndexedDB
     await window.db.addVisit({
       clientId: clientId,
       createdAt: new Date().toISOString(),
@@ -938,18 +986,17 @@ async function submitVisit() {
       payload: payload
     });
 
-    // Чистим черновик
     if (window.db && window.db.clearDraft) await window.db.clearDraft();
 
     await refreshQueueStats();
 
-    // Пробуем сразу отправить, если есть сеть
     if (navigator.onLine && window.sync && window.sync.syncNow) {
       window.sync.syncNow().catch(() => {});
     }
 
     state.screen = 'saved';
     state.submitResult = { clientId: clientId };
+    state.draftId = null;
     render();
     window.scrollTo(0, 0);
   } catch (err) {
@@ -997,7 +1044,8 @@ function autoSave() {
       extraPhotos: state.form.extraPhotos
     },
     screen: state.screen,
-    savedAt: new Date().toISOString()
+    savedAt: new Date().toISOString(),
+    draftId: state.draftId
   };
   window.db.saveDraft(draft).catch(err => console.warn('saveDraft:', err));
 }
@@ -1011,7 +1059,10 @@ async function checkDraftOnStart() {
   if (!window.db || !window.db.loadDraft) return null;
   try {
     const draft = await window.db.loadDraft();
-    if (draft && draft.form && draft.form.kvNumber) return draft;
+    if (draft && draft.form && draft.form.kvNumber) {
+      if (draft.draftId) state.draftId = draft.draftId;
+      return draft;
+    }
   } catch (err) { console.warn('checkDraftOnStart:', err); }
   return null;
 }
@@ -1029,6 +1080,7 @@ function restoreDraft(draft) {
     comments: draft.form.comments || '',
     extraPhotos: draft.form.extraPhotos || []
   };
+  state.draftId = draft.draftId || window.db.uuid();
   state.screen = draft.screen || 'newVisitKv';
   if (!state.form.apartment && state.screen === 'newVisitRef') state.screen = 'newVisitKv';
 }
