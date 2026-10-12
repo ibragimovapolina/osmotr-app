@@ -1,0 +1,421 @@
+/* ============ БАЗА ============ */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.4;
+  color: #202124;
+  background: #f5f5f7;
+  min-height: 100vh;
+}
+
+#app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px;
+  padding-top: calc(16px + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(100px + env(safe-area-inset-bottom, 0px));
+}
+
+/* ============ ОБЩИЕ ============ */
+.loading {
+  text-align: center;
+  padding: 60px 20px;
+  color: #5f6368;
+  font-size: 18px;
+}
+
+.card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+
+h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: #202124;
+}
+
+p {
+  color: #5f6368;
+  margin-bottom: 12px;
+}
+
+/* ============ КНОПКИ ============ */
+.btn {
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  padding: 16px 20px;
+  border: none;
+  border-radius: 12px;
+  font-size: 17px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  text-align: center;
+  font-family: inherit;
+}
+
+.btn:active {
+  opacity: 0.75;
+}
+
+.btn-primary {
+  background: #1a73e8;
+  color: #fff;
+}
+
+.btn-secondary {
+  background: #e8eaed;
+  color: #202124;
+}
+
+.btn-large {
+  min-height: 64px;
+  font-size: 18px;
+}
+
+.btn + .btn {
+  margin-top: 12px;
+}
+
+/* ============ ГЛАВНЫЙ ЭКРАН ============ */
+.user-greeting {
+  text-align: center;
+  padding: 24px 0;
+}
+
+.user-greeting .avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #1a73e8;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.user-greeting .email {
+  color: #5f6368;
+  font-size: 14px;
+}
+
+/* ============ ФОРМА ============ */
+.step-header {
+  margin-bottom: 20px;
+}
+
+.step-progress {
+  display: inline-block;
+  background: #e8f0fe;
+  color: #1a73e8;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 20px;
+  margin-bottom: 12px;
+}
+
+.field-group {
+  margin-bottom: 16px;
+}
+
+.field-label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: #5f6368;
+  margin-bottom: 6px;
+}
+
+.field-input {
+  width: 100%;
+  min-height: 52px;
+  padding: 14px 16px;
+  border: 2px solid #e8eaed;
+  border-radius: 10px;
+  font-size: 17px;
+  font-family: inherit;
+  background: #fff;
+  transition: border-color 0.15s;
+  -webkit-appearance: none;
+}
+
+.field-input:focus {
+  outline: none;
+  border-color: #1a73e8;
+}
+
+.hint {
+  color: #5f6368;
+  font-size: 14px;
+  padding: 12px 0;
+  text-align: center;
+}
+
+/* ============ ПРЕВЬЮ КВАРТИРЫ ============ */
+.apartment-preview {
+  background: #e6f4ea;
+  border: 1px solid #34a853;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 16px 0;
+}
+
+.apartment-preview-title {
+  color: #137333;
+  font-weight: 600;
+  margin-bottom: 10px;
+  font-size: 15px;
+}
+
+.apartment-preview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+  font-size: 14px;
+  color: #202124;
+}
+
+.apartment-preview-grid span {
+  color: #5f6368;
+}
+
+.apartment-not-found {
+  background: #fef7e0;
+  border: 1px solid #f9ab00;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin: 16px 0;
+  color: #b06000;
+  font-size: 15px;
+}
+
+/* ============ КАРТОЧКА ОБЪЕКТА ============ */
+.objects-list {
+  margin-bottom: 20px;
+}
+
+.object-card {
+  background: #fafafa;
+  border: 1px solid #e8eaed;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.object-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: #202124;
+}
+
+/* ============ ЧИПЫ ============ */
+.chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.chip {
+  display: inline-block;
+  padding: 10px 16px;
+  min-height: 44px;
+  background: #fff;
+  border: 2px solid #e8eaed;
+  border-radius: 22px;
+  font-size: 15px;
+  font-family: inherit;
+  color: #202124;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+  line-height: 1.3;
+}
+
+.chip:active {
+  opacity: 0.75;
+}
+
+.chip-selected {
+  background: #1a73e8;
+  color: #fff;
+  border-color: #1a73e8;
+}
+
+.chip-no-issues {
+  font-weight: 600;
+}
+
+.chip-no-issues.chip-selected {
+  background: #34a853;
+  border-color: #34a853;
+  color: #fff;
+}
+
+/* ============ СВОЁ ЗАМЕЧАНИЕ ============ */
+.custom-input {
+  width: 100%;
+  min-height: 60px;
+  padding: 12px 16px;
+  border: 2px solid #e8eaed;
+  border-radius: 10px;
+  font-size: 15px;
+  font-family: inherit;
+  background: #fff;
+  resize: vertical;
+  margin-bottom: 12px;
+}
+
+.custom-input:focus {
+  outline: none;
+  border-color: #1a73e8;
+}
+
+/* ============ ФОТО ============ */
+.photo-block {
+  margin-top: 8px;
+}
+
+.photo-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.photo-item {
+  position: relative;
+  width: 80px;
+  height: 80px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f0f0f0;
+}
+
+.photo-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.photo-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.6);
+  color: #fff;
+  border: none;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.photo-uploading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #e8f0fe;
+}
+
+.photo-spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid #e8f0fe;
+  border-top-color: #1a73e8;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 4px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.photo-uploading-text {
+  font-size: 10px;
+  color: #1a73e8;
+  text-align: center;
+  padding: 0 4px;
+}
+
+.photo-add-label {
+  display: inline-block;
+  cursor: pointer;
+}
+
+.photo-add-btn {
+  display: inline-block;
+  padding: 12px 20px;
+  min-height: 44px;
+  background: #fff;
+  border: 2px dashed #bdc1c6;
+  border-radius: 10px;
+  font-size: 15px;
+  color: #1a73e8;
+  font-weight: 500;
+  transition: background 0.15s;
+}
+
+.photo-add-btn:active {
+  background: #e8f0fe;
+}
+
+/* ============ ОШИБКИ ============ */
+.obj-error {
+  background: #fce8e6;
+  border: 1px solid #ea4335;
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: #c5221f;
+  font-size: 14px;
+  margin-top: 10px;
+}
+
+.error-box {
+  background: #fce8e6;
+  border: 1px solid #ea4335;
+  border-radius: 8px;
+  padding: 16px;
+  color: #c5221f;
+  margin-bottom: 16px;
+  font-size: 15px;
+}
+
+/* ============ ЭКРАН "ГОТОВО" ============ */
+.done-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+  text-align: center;
+}
