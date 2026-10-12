@@ -814,22 +814,27 @@ function onKvInput(value) {
       if (data && data.found) {
         state.form.apartment = data.data;
 
-        let previous = [];
-        try { previous = await window.db.findVisitsByKv(kv); } catch (e) {}
+        // 1) Локальная проверка (мгновенно)
+        let localVisits = [];
+        try { localVisits = await window.db.findVisitsByKv(kv); } catch (e) {}
 
-        if (previous.length > 0) {
-          const latest = previous[0];
+        if (localVisits.length > 0) {
+          const latest = localVisits[0];
           const dt = latest.createdAt ? new Date(latest.createdAt).toLocaleString('ru-RU') : '—';
           const userName = (latest.payload && latest.payload.email) || '—';
           const type = latest.status === 'synced' ? 'synced' : 'pending';
-          state.kvWarning = { type, date: dt, userName };
+          state.kvWarning = { type, date: dt, userName, source: 'local', count: localVisits.length };
         } else {
           state.kvWarning = null;
         }
 
-        // ТОЧЕЧНО обновляем блок превью, не перерисовывая страницу
         renderKvResultBlock();
         if (btn) btn.disabled = false;
+
+        // 2) Серверная проверка (в фоне) — только если сеть есть
+        if (navigator.onLine) {
+          checkServerVisits(kv).catch(() => {});
+        }
       } else {
         state.form.apartment = null;
         state.kvWarning = null;
@@ -843,7 +848,37 @@ function onKvInput(value) {
   }, 400);
 }
 
-// ТОЧЕЧНО обновляет блок превью + предупреждение, не перерисовывая всю страницу
+// Проверка через сервер — обновляет плашку, если найдены осмотры в Google Sheets
+async function checkServerVisits(kv) {
+  try {
+    const res = await apiGet('checkVisitExists', { kvNumber: kv });
+    const data = (res && res.data) ? res.data : res;
+    if (!data || !data.found) return;
+
+    // Если пользователь уже переключился на другую квартиру — не обновляем
+    if (String(state.form.kvNumber || '').trim() !== String(kv).trim()) return;
+
+    const latest = data.latest || {};
+    let dt = '—';
+    if (latest.date) {
+      try { dt = new Date(latest.date).toLocaleString('ru-RU'); } catch (e) {}
+    }
+    const userName = latest.email || '—';
+    const count = data.count || 1;
+
+    state.kvWarning = {
+      type: 'synced',
+      date: dt,
+      userName: userName,
+      source: 'server',
+      count: count
+    };
+    renderKvResultBlock();
+  } catch (e) {
+    console.warn('[checkServerVisits]', e.message);
+  }
+}
+
 function renderKvResultBlock() {
   const result = document.getElementById('kvResult');
   if (!result) return;
@@ -866,13 +901,27 @@ function renderKvResultBlock() {
   let warningEl = document.getElementById('kvWarningBlock');
 
   if (warning) {
+    let prefix;
+    if (warning.source === 'server') {
+      const times = warning.count > 1 ? ` (${warning.count} раза)` : '';
+      prefix = `<strong>⚠ Квартира уже осматривалась${times}.</strong>`;
+    } else {
+      if (warning.type === 'synced') {
+        prefix = '<strong>⚠ Вы уже осматривали эту квартиру.</strong>';
+      } else {
+        prefix = '<strong>⏳ Квартира уже в очереди у вас.</strong>';
+      }
+    }
+
     const warningHtml = `
       <div class="kv-warning">
-        ${warning.type === 'synced'
-          ? `<strong>⚠ Квартира уже осматривалась.</strong><br>Дата: ${escapeHtml(warning.date)}<br>Осмотрщик: ${escapeHtml(warning.userName)}<br><br>Вы можете осмотреть её ещё раз — ничего не блокируется.`
-          : `<strong>⏳ Квартира уже в очереди на отправку.</strong><br>Дата: ${escapeHtml(warning.date)}<br>Осмотрщик: ${escapeHtml(warning.userName)}<br><br>Если это повторный осмотр — можно продолжить.`}
+        ${prefix}<br>
+        Дата: ${escapeHtml(warning.date)}<br>
+        Осмотрщик: ${escapeHtml(warning.userName)}<br><br>
+        Вы можете осмотреть её ещё раз — ничего не блокируется.
       </div>
     `;
+
     if (warningEl) {
       warningEl.innerHTML = warningHtml;
     } else {
