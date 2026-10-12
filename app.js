@@ -29,6 +29,11 @@ async function init() {
   state.pendingDraft = draft;
   state.screen = 'home';
   render();
+
+  // Попробовать тихо обновить справочник (если есть модуль sync)
+  if (window.sync && window.sync.silentUpdateReference) {
+    window.sync.silentUpdateReference().catch(() => {});
+  }
 }
 
 // ================= API =================
@@ -104,8 +109,44 @@ function renderHome(app) {
     </div>` : ''}
     <div class="card">
       <button class="btn btn-primary btn-large" onclick="startNewVisit()">🏠 Новый осмотр</button>
+      <button class="btn btn-secondary" onclick="showDiagnostics()">🔍 Диагностика</button>
     </div>
   `;
+}
+
+// ================= ДИАГНОСТИКА =================
+async function showDiagnostics() {
+  try {
+    const db = await window.db._openDB();
+    const stores = Array.from(db.objectStoreNames);
+
+    const stats = await window.db.getQueueStats();
+
+    let ref = null, remarks = null, marks = null;
+    try { ref = await window.db.getReference(); } catch(e) {}
+    try { remarks = await window.db.getRemarks(); } catch(e) {}
+    try { marks = await window.db.getMarks(); } catch(e) {}
+
+    const refCount = ref ? Object.keys(ref).length : 0;
+    const remCount = remarks ? Object.keys(remarks).length : 0;
+    const marksCount = marks ? Object.keys(marks).length : 0;
+
+    const version = await window.db.getMeta('version');
+
+    alert(
+      '🔍 Диагностика IndexedDB\n\n' +
+      'Хранилища (' + stores.length + '):\n' + stores.join(', ') + '\n\n' +
+      'Справочник: ' + refCount + ' квартир\n' +
+      'Замечания: ' + remCount + ' типов\n' +
+      'Марки окон: ' + marksCount + '\n' +
+      'Версия данных: ' + (version ? JSON.stringify(version) : '—') + '\n\n' +
+      'Очередь осмотров: ' + stats.pendingVisits + '\n' +
+      'Очередь фото: ' + stats.pendingPhotos + '\n\n' +
+      'Сеть: ' + (navigator.onLine ? 'онлайн' : 'офлайн')
+    );
+  } catch (err) {
+    alert('Ошибка диагностики: ' + err.message);
+  }
 }
 
 async function continueDraft() {
@@ -170,15 +211,15 @@ function onKvInput(value) {
     const kv = String(value || '').trim();
     if (!kv) { if (result) result.innerHTML = ''; return; }
     try {
-      const res = await apiGet('checkApartment', { kvNumber: kv });
-      const data = res.data || res;
+      const res = await checkApartmentSmart(kv);
+      const data = res;
 
       if (data && data.found) {
         state.form.apartment = data.data;
         if (result) {
           result.innerHTML = `
             <div class="apartment-preview">
-              <div class="apartment-preview-title">✓ Найдено в справочнике</div>
+              <div class="apartment-preview-title">✓ ${data.fromCache ? 'Найдено в кэше' : 'Найдено в справочнике'}</div>
               <div class="apartment-preview-grid">
                 <div><span>Площадь:</span> ${escapeHtml(data.data.area || '—')}</div>
                 <div><span>Этаж:</span> ${escapeHtml(data.data.floor || '—')}</div>
@@ -197,6 +238,23 @@ function onKvInput(value) {
       if (result) result.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
     }
   }, 400);
+}
+
+// Ищем квартиру: сначала в сети, если ошибка — в локальном кэше
+async function checkApartmentSmart(kv) {
+  const kvKey = String(kv).trim().toLowerCase();
+  try {
+    const res = await apiGet('checkApartment', { kvNumber: kv });
+    const data = res.data || res;
+    return data;
+  } catch (netErr) {
+    // Фолбэк на кэш
+    const ref = await window.db.getReference();
+    if (ref && ref[kvKey]) {
+      return { found: true, kv: kv, data: ref[kvKey], fromCache: true };
+    }
+    throw netErr;
+  }
 }
 
 function onKvNext() {
@@ -288,8 +346,7 @@ async function onRefNext() {
   state.form.apartment = Object.assign({}, apt, edited);
 
   try {
-    const res = await apiGet('getFormData', { apartment: state.form.apartment });
-    const data = res.data || res;
+    const data = await getFormDataSmart(state.form.apartment);
     state.form.divisions = data.divisions || [];
     state.form.currentDivisionIndex = 0;
     state.screen = 'division';
@@ -298,6 +355,27 @@ async function onRefNext() {
     autoSave();
   } catch (err) {
     alert('Ошибка загрузки разделов: ' + err.message);
+  }
+}
+
+// getFormData: сеть → фолбэк на локальную сборку из кэша
+async function getFormDataSmart(apartment) {
+  try {
+    const res = await apiGet('getFormData', { apartment: apartment });
+    const data = res.data || res;
+    return data;
+  } catch (netErr) {
+    // Локальная сборка из кэша
+    if (window.localForm && window.localForm.buildFormData) {
+      const [ref, remarks] = await Promise.all([
+        window.db.getReference(),
+        window.db.getRemarks()
+      ]);
+      if (ref && remarks) {
+        return window.localForm.buildFormData(apartment, remarks);
+      }
+    }
+    throw netErr;
   }
 }
 
@@ -375,7 +453,7 @@ function renderPhotoBlock(stateKey, objState) {
 
   let photoItemsHtml = photos.map((p, i) => `
     <div class="photo-item">
-      <img src="${escapeAttr(p.url)}" alt="Фото ${i + 1}" class="photo-thumb">
+      <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
       <button type="button" class="photo-remove" onclick="removePhoto('${escapeAttr(stateKey)}', ${i})">×</button>
     </div>
   `).join('');
@@ -431,7 +509,7 @@ function onCustomInput(stateKey, value) {
   debouncedAutoSave();
 }
 
-// ================= ФОТО — ЗАГРУЗКА ЧАСТЯМИ =================
+// ================= ФОТО =================
 async function onPhotoSelected(event, stateKey) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
@@ -479,13 +557,10 @@ async function onPhotoSelected(event, stateKey) {
   updateObjectCard(stateKey);
 }
 
-// Универсальная функция загрузки фото частями
 async function uploadPhotoInChunks(base64, fileName, kvNumber) {
   const uploadId = 'up_' + Date.now() + '_' + Math.random().toString(36).substring(2, 10);
   const CHUNK_SIZE = 1800;
   const totalChunks = Math.ceil(base64.length / CHUNK_SIZE);
-
-  console.log(`[Chunk] Фото: ${base64.length} символов → ${totalChunks} кусков`);
 
   let finalResult = null;
   for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
@@ -506,14 +581,11 @@ async function uploadPhotoInChunks(base64, fileName, kvNumber) {
     if (result && result.fileId) {
       finalResult = result;
     }
-
-    console.log(`[Chunk] ${chunkIndex + 1}/${totalChunks} отправлен`);
   }
 
   if (!finalResult || !finalResult.fileId) {
     throw new Error('Фото не собралось из кусков');
   }
-
   return finalResult;
 }
 
@@ -587,7 +659,7 @@ function renderExtraInfo(app, div, progressText, isLast) {
 
   let photoItemsHtml = extraPhotos.map((p, i) => `
     <div class="photo-item">
-      <img src="${escapeAttr(p.url)}" alt="Фото ${i + 1}" class="photo-thumb">
+      <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
       <button type="button" class="photo-remove" onclick="removeExtraPhoto(${i})">×</button>
     </div>
   `).join('');
@@ -773,9 +845,11 @@ async function submitVisit() {
       kvNumber: state.form.kvNumber,
       results: state.form.results,
       extraPhotos: state.form.extraPhotos || [],
-      comments: state.form.comments || ''
+      comments: state.form.comments || '',
+      visitedAt: new Date().toISOString()
     };
 
+    // TODO: на шаге C заменим на сохранение в очередь IndexedDB
     await apiGet('submitVisit', payload);
     await new Promise(resolve => setTimeout(resolve, 2000));
 
