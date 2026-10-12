@@ -25,51 +25,29 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   state.user = { email: 'осмотрщик' };
-
   const draft = await checkDraftOnStart();
   state.pendingDraft = draft;
-
   state.screen = 'home';
   render();
 }
 
-// ================= API (fetch через прокси) =================
-
-// GET-запрос — для лёгких данных
+// ================= API =================
 async function apiGet(action, payload) {
   const params = new URLSearchParams();
   params.set('action', action);
   params.set('payload', JSON.stringify(payload || {}));
-
   const url = API_URL + '?' + params.toString();
 
   const response = await fetch(url, {
     method: 'GET',
     headers: { 'Accept': 'application/json' }
   });
-
-  if (!response.ok) {
-    throw new Error('HTTP ' + response.status);
-  }
+  if (!response.ok) throw new Error('HTTP ' + response.status);
 
   const text = await response.text();
-
-  // Прокси может отдать JSONP-обёртку (test({...})) или чистый JSON
-  let jsonText = text.trim();
-  const match = jsonText.match(/^[^(]+\((.*)\);?\s*$/s);
-  if (match) {
-    jsonText = match[1];
-  }
-
-  const result = JSON.parse(jsonText);
-
-  if (result && result.ok === false) {
-    throw new Error(result.error || 'Неизвестная ошибка');
-  }
-  return result;
+  return parseResponse(text);
 }
 
-// POST-запрос — для тяжёлых данных (фото, отправка осмотра)
 async function apiPost(action, payload) {
   const body = new URLSearchParams();
   body.set('action', action);
@@ -80,21 +58,26 @@ async function apiPost(action, payload) {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: body.toString()
   });
-
-  if (!response.ok) {
-    throw new Error('HTTP ' + response.status);
-  }
+  if (!response.ok) throw new Error('HTTP ' + response.status);
 
   const text = await response.text();
+  return parseResponse(text);
+}
 
-  // Прокси может отдать JSONP-обёртку или чистый JSON
-  let jsonText = text.trim();
-  const match = jsonText.match(/^[^(]+\((.*)\);?\s*$/s);
-  if (match) {
-    jsonText = match[1];
+// Универсальный парсер: отдаёт JSON как есть или снимает JSONP-обёртку
+function parseResponse(text) {
+  let t = String(text || '').trim();
+
+  // JSONP-обёртка: test({...});
+  const match = t.match(/^[a-zA-Z0-9_$]+\((.*)\);?\s*$/s);
+  if (match) t = match[1];
+
+  let result;
+  try {
+    result = JSON.parse(t);
+  } catch (err) {
+    throw new Error('Ответ не JSON: ' + t.substring(0, 100));
   }
-
-  const result = JSON.parse(jsonText);
 
   if (result && result.ok === false) {
     throw new Error(result.error || 'Неизвестная ошибка');
@@ -105,12 +88,7 @@ async function apiPost(action, payload) {
 // ================= РЕНДЕРИНГ =================
 function render() {
   const app = document.getElementById('app');
-
-  if (state.screen === 'loading') {
-    app.innerHTML = '<div class="loading">Загрузка...</div>';
-    return;
-  }
-
+  if (state.screen === 'loading') { app.innerHTML = '<div class="loading">Загрузка...</div>'; return; }
   if (state.screen === 'error') {
     app.innerHTML = `
       <div class="error-box"><strong>Ошибка:</strong><br>${escapeHtml(state.errorMessage)}</div>
@@ -118,7 +96,6 @@ function render() {
     `;
     return;
   }
-
   if (state.screen === 'home')        return renderHome(app);
   if (state.screen === 'newVisitKv')  return renderNewVisitKv(app);
   if (state.screen === 'newVisitRef') return renderNewVisitRef(app);
@@ -130,28 +107,20 @@ function render() {
 function renderHome(app) {
   const hasDraft = !!state.pendingDraft;
   const draftInfo = hasDraft && state.pendingDraft.form
-    ? `Квартира ${state.pendingDraft.form.kvNumber || '—'}`
-    : '';
+    ? `Квартира ${state.pendingDraft.form.kvNumber || '—'}` : '';
 
   app.innerHTML = `
     <div class="user-greeting">
       <div class="avatar">О</div>
       <div class="email">Осмотр квартир</div>
     </div>
-
     ${hasDraft ? `
     <div class="card" style="background:#fff8e1;border:1px solid #f9ab00;">
       <h2 style="margin-bottom:8px;">📋 Незавершённый осмотр</h2>
       <p style="color:#b06000;font-size:14px;">У вас есть сохранённый черновик: ${escapeHtml(draftInfo)}.</p>
-      <button class="btn btn-primary btn-large" style="margin-top:12px;" onclick="continueDraft()">
-        ▶ Продолжить черновик
-      </button>
-      <button class="btn btn-secondary" style="margin-top:8px;" onclick="discardDraft()">
-        🗑 Удалить черновик
-      </button>
-    </div>
-    ` : ''}
-
+      <button class="btn btn-primary btn-large" style="margin-top:12px;" onclick="continueDraft()">▶ Продолжить черновик</button>
+      <button class="btn btn-secondary" style="margin-top:8px;" onclick="discardDraft()">🗑 Удалить черновик</button>
+    </div>` : ''}
     <div class="card">
       <button class="btn btn-primary btn-large" onclick="startNewVisit()">🏠 Новый осмотр</button>
     </div>
@@ -167,9 +136,7 @@ async function continueDraft() {
 }
 
 async function discardDraft() {
-  if (window.db && window.db.clearDraft) {
-    await window.db.clearDraft();
-  }
+  if (window.db && window.db.clearDraft) await window.db.clearDraft();
   state.pendingDraft = null;
   render();
 }
@@ -184,11 +151,7 @@ function startNewVisit() {
   state.submitResult = null;
   state.pendingDraft = null;
   state.screen = 'newVisitKv';
-
-  if (window.db && window.db.clearDraft) {
-    window.db.clearDraft().catch(() => {});
-  }
-
+  if (window.db && window.db.clearDraft) window.db.clearDraft().catch(() => {});
   render();
 }
 
@@ -307,13 +270,11 @@ function renderNewVisitRef(app) {
 
       ${showWinR2 ? `
       <div class="field-group"><label class="field-label">Окон в ЖК №2</label>
-        <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('winR2', apt.winR2))}" oninput="onRefEdit('winR2', this.value)"></div>
-      ` : ''}
+        <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('winR2', apt.winR2))}" oninput="onRefEdit('winR2', this.value)"></div>` : ''}
 
       ${showWinR3 ? `
       <div class="field-group"><label class="field-label">Окон в ЖК №3</label>
-        <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('winR3', apt.winR3))}" oninput="onRefEdit('winR3', this.value)"></div>
-      ` : ''}
+        <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('winR3', apt.winR3))}" oninput="onRefEdit('winR3', this.value)"></div>` : ''}
 
       <div class="field-group"><label class="field-label">Окон на кухне</label>
         <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('winK', apt.winK))}" oninput="onRefEdit('winK', this.value)"></div>
@@ -336,11 +297,7 @@ function onRefEditRoomsNum(value) {
   debouncedAutoSave();
   setTimeout(() => {
     const input = document.getElementById('roomsNumInput');
-    if (input) {
-      input.focus();
-      const len = input.value.length;
-      try { input.setSelectionRange(len, len); } catch (e) {}
-    }
+    if (input) { input.focus(); const len = input.value.length; try { input.setSelectionRange(len, len); } catch (e) {} }
   }, 0);
 }
 
@@ -372,18 +329,13 @@ function renderDivision(app) {
   const idx = state.form.currentDivisionIndex;
   const div = divs[idx];
 
-  if (!div) {
-    app.innerHTML = `<div class="error-box">Раздел не найден. Обновите страницу.</div>`;
-    return;
-  }
+  if (!div) { app.innerHTML = `<div class="error-box">Раздел не найден.</div>`; return; }
 
   const totalDivisions = divs.length;
   const progressText = `Шаг ${idx + 3} из ${totalDivisions + 2}`;
   const isLast = (idx + 1 === totalDivisions);
 
-  if (div.key === 'dopolnitelno') {
-    return renderExtraInfo(app, div, progressText, isLast);
-  }
+  if (div.key === 'dopolnitelno') return renderExtraInfo(app, div, progressText, isLast);
 
   const objectsHtml = div.objects.map(obj => renderObjectCard(div.key, obj)).join('');
 
@@ -459,10 +411,7 @@ function renderPhotoBlock(stateKey, objState) {
 
   return `
     <div class="photo-block">
-      <div class="photo-list">
-        ${photoItemsHtml}
-        ${uploadingHtml}
-      </div>
+      <div class="photo-list">${photoItemsHtml}${uploadingHtml}</div>
       <label class="photo-add-label">
         <input type="file" accept="image/*" multiple style="display:none"
                onchange="onPhotoSelected(event, '${escapeAttr(stateKey)}')">
@@ -476,8 +425,7 @@ function toggleVariant(stateKey, variant) {
   const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [] };
   rs.noIssues = false;
   const i = rs.selected.indexOf(variant);
-  if (i >= 0) rs.selected.splice(i, 1);
-  else rs.selected.push(variant);
+  if (i >= 0) rs.selected.splice(i, 1); else rs.selected.push(variant);
   rs.error = null;
   state.form.results[stateKey] = rs;
   updateObjectCard(stateKey);
@@ -528,7 +476,6 @@ async function onPhotoSelected(event, stateKey) {
       const compressed = await compressImage(file);
       const fileName = buildFileName(divisionKey, objectKey, i + 1 + rs.photos.length);
 
-      // Отправляем фото через прокси (POST)
       const res = await apiPost('uploadPhoto', {
         base64: compressed,
         fileName: fileName,
@@ -573,8 +520,7 @@ function compressImage(file) {
       img.onload = () => {
         const MAX_WIDTH = 1200;
         const MAX_HEIGHT = 1200;
-        let w = img.width;
-        let h = img.height;
+        let w = img.width, h = img.height;
         if (w > MAX_WIDTH || h > MAX_HEIGHT) {
           const ratio = Math.min(MAX_WIDTH / w, MAX_HEIGHT / h);
           w = Math.round(w * ratio);
@@ -703,11 +649,7 @@ async function onExtraPhotoSelected(event) {
       });
       const data = res.data || res;
 
-      state.form.extraPhotos.push({
-        fileId: data.fileId,
-        url: data.url,
-        name: fileName
-      });
+      state.form.extraPhotos.push({ fileId: data.fileId, url: data.url, name: fileName });
       render();
       autoSave();
     } catch (err) {
@@ -775,16 +717,12 @@ async function onDivisionNext() {
     render();
     setTimeout(() => {
       let target = null;
-      if (firstErrorKey) {
-        target = document.querySelector(`[data-state-key="${cssEscape(firstErrorKey)}"]`);
-      }
+      if (firstErrorKey) target = document.querySelector(`[data-state-key="${cssEscape(firstErrorKey)}"]`);
       if (!target) target = document.querySelector('.obj-error');
       if (target) {
         const y = target.getBoundingClientRect().top + window.pageYOffset - 80;
         window.scrollTo({ top: y, behavior: 'smooth' });
-      } else {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      }
+      } else window.scrollTo({ top: 0, behavior: 'smooth' });
     }, 50);
     return;
   }
@@ -828,9 +766,7 @@ async function submitVisit() {
     await apiPost('submitVisit', payload);
     await new Promise(resolve => setTimeout(resolve, 2000));
 
-    if (window.db && window.db.clearDraft) {
-      await window.db.clearDraft();
-    }
+    if (window.db && window.db.clearDraft) await window.db.clearDraft();
 
     state.screen = 'done';
     state.submitResult = { row: null };
@@ -850,12 +786,8 @@ function renderDone(app) {
       <div class="done-icon">✅</div>
       <h2>Осмотр отправлен</h2>
       <p style="margin-top:12px;">Данные записаны в таблицу.</p>
-      <button class="btn btn-primary btn-large" style="margin-top:24px;" onclick="startNewVisit()">
-        🏠 Оформить ещё один осмотр
-      </button>
-      <button class="btn btn-secondary btn-large" onclick="goHome()">
-        ← На главную
-      </button>
+      <button class="btn btn-primary btn-large" style="margin-top:24px;" onclick="startNewVisit()">🏠 Оформить ещё один осмотр</button>
+      <button class="btn btn-secondary btn-large" onclick="goHome()">← На главную</button>
     </div>
   `;
 }
@@ -865,7 +797,6 @@ let _autoSaveTimeout = null;
 
 function autoSave() {
   if (!window.db || !window.db.saveDraft) return;
-
   const draft = {
     form: {
       kvNumber: state.form.kvNumber,
@@ -880,29 +811,20 @@ function autoSave() {
     screen: state.screen,
     savedAt: new Date().toISOString()
   };
-
-  window.db.saveDraft(draft).catch(err => {
-    console.warn('Не удалось сохранить черновик:', err);
-  });
+  window.db.saveDraft(draft).catch(err => console.warn('saveDraft:', err));
 }
 
 function debouncedAutoSave() {
   if (_autoSaveTimeout) clearTimeout(_autoSaveTimeout);
-  _autoSaveTimeout = setTimeout(() => {
-    autoSave();
-  }, 800);
+  _autoSaveTimeout = setTimeout(autoSave, 800);
 }
 
 async function checkDraftOnStart() {
   if (!window.db || !window.db.loadDraft) return null;
   try {
     const draft = await window.db.loadDraft();
-    if (draft && draft.form && draft.form.kvNumber) {
-      return draft;
-    }
-  } catch (err) {
-    console.warn('checkDraftOnStart:', err);
-  }
+    if (draft && draft.form && draft.form.kvNumber) return draft;
+  } catch (err) { console.warn('checkDraftOnStart:', err); }
   return null;
 }
 
@@ -920,10 +842,7 @@ function restoreDraft(draft) {
     extraPhotos: draft.form.extraPhotos || []
   };
   state.screen = draft.screen || 'newVisitKv';
-
-  if (!state.form.apartment && state.screen === 'newVisitRef') {
-    state.screen = 'newVisitKv';
-  }
+  if (!state.form.apartment && state.screen === 'newVisitRef') state.screen = 'newVisitKv';
 }
 
 // ================= УТИЛИТЫ =================
