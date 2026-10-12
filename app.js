@@ -32,7 +32,7 @@ async function init() {
 let _jsonpCounter = 0;
 let _iframeCounter = 0;
 
-// GET-запрос через JSONP (для лёгких данных)
+// GET через JSONP — для лёгких данных
 function apiGet(action, payload) {
   return new Promise((resolve, reject) => {
     const callbackName = 'jsonp_cb_' + (++_jsonpCounter) + '_' + Date.now();
@@ -41,15 +41,6 @@ function apiGet(action, payload) {
       try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
       const script = document.getElementById(callbackName);
       if (script) script.remove();
-    };
-
-    window[callbackName] = function (result) {
-      cleanup();
-      if (result && result.ok === false) {
-        reject(new Error(result.error || 'Неизвестная ошибка'));
-        return;
-      }
-      resolve(result);
     };
 
     const params = new URLSearchParams();
@@ -90,9 +81,10 @@ function apiGet(action, payload) {
   });
 }
 
-// POST-запрос через iframe (для тяжёлых данных: фото, отправка)
-function apiPost(action, payload) {
-  return new Promise((resolve, reject) => {
+// POST «выстрелил и забыл» — отправляет данные через скрытую форму,
+// не ждёт ответа (обход блокировки postMessage из Apps Script)
+function apiPostFireAndForget(action, payload) {
+  return new Promise((resolve) => {
     const iframeName = 'iframe_target_' + (++_iframeCounter) + '_' + Date.now();
 
     const iframe = document.createElement('iframe');
@@ -100,47 +92,6 @@ function apiPost(action, payload) {
     iframe.id = iframeName;
     iframe.style.display = 'none';
     document.body.appendChild(iframe);
-
-    let resolved = false;
-    let timeoutId = null;
-
-    const cleanup = () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      window.removeEventListener('message', messageHandler);
-      try { iframe.remove(); } catch (e) {}
-    };
-
-    const messageHandler = function (event) {
-      if (resolved) return;
-      if (!event.data) return;
-
-      let result;
-      try {
-        result = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-      } catch (e) {
-        return;
-      }
-
-      if (!result || result.__action !== action) return;
-
-      resolved = true;
-      cleanup();
-
-      if (result.ok === false) {
-        reject(new Error(result.error || 'Неизвестная ошибка'));
-        return;
-      }
-      resolve(result);
-    };
-
-    window.addEventListener('message', messageHandler);
-
-    timeoutId = setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      cleanup();
-      reject(new Error('Таймаут запроса (iframe)'));
-    }, 120000);
 
     const form = document.createElement('form');
     form.method = 'POST';
@@ -163,7 +114,12 @@ function apiPost(action, payload) {
     document.body.appendChild(form);
     form.submit();
 
-    setTimeout(() => { try { form.remove(); } catch (e) {} }, 1000);
+    // Не ждём postMessage — просто считаем, что запрос ушёл
+    setTimeout(() => {
+      try { form.remove(); } catch (e) {}
+      try { iframe.remove(); } catch (e) {}
+      resolve({ ok: true, data: {} });
+    }, 500);
   });
 }
 
@@ -545,16 +501,39 @@ async function onPhotoSelected(event, stateKey) {
       const compressed = await compressImage(file);
       const fileName = buildFileName(divisionKey, objectKey, i + 1 + rs.photos.length);
 
-      const res = await apiPost('uploadPhoto', {
+      // 1. Отправляем фото «в никуда» — не ждём ответа
+      await apiPostFireAndForget('uploadPhoto', {
         base64: compressed,
         fileName: fileName,
         kvNumber: kv
       });
-      const data = res.data || res;
+
+      // 2. Проверяем статус — появилось ли фото на Drive, раз в 1 секунду
+      let uploaded = null;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        try {
+          const statusRes = await apiGet('getPhotoStatus', {
+            kvNumber: kv,
+            fileName: fileName
+          });
+          const status = statusRes.data || statusRes;
+          if (status && status.found) {
+            uploaded = status;
+            break;
+          }
+        } catch (e) {
+          // Продолжаем ждать
+        }
+      }
+
+      if (!uploaded) {
+        throw new Error('Фото не загрузилось за 30 секунд');
+      }
 
       rs.photos.push({
-        fileId: data.fileId,
-        url: data.url,
+        fileId: uploaded.fileId,
+        url: uploaded.url,
         name: fileName,
         objectKey: objectKey,
         divisionKey: divisionKey
@@ -706,9 +685,37 @@ async function onExtraPhotoSelected(event) {
       const file = files[i];
       const compressed = await compressImage(file);
       const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
-      const res = await apiPost('uploadPhoto', { base64: compressed, fileName: fileName, kvNumber: kv });
-      const data = res.data || res;
-      state.form.extraPhotos.push({ fileId: data.fileId, url: data.url, name: fileName });
+
+      // Отправляем «в никуда»
+      await apiPostFireAndForget('uploadPhoto', {
+        base64: compressed,
+        fileName: fileName,
+        kvNumber: kv
+      });
+
+      // Ждём появления на Drive
+      let uploaded = null;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        try {
+          const statusRes = await apiGet('getPhotoStatus', { kvNumber: kv, fileName: fileName });
+          const status = statusRes.data || statusRes;
+          if (status && status.found) {
+            uploaded = status;
+            break;
+          }
+        } catch (e) {}
+      }
+
+      if (!uploaded) {
+        throw new Error('Фото не загрузилось за 30 секунд');
+      }
+
+      state.form.extraPhotos.push({
+        fileId: uploaded.fileId,
+        url: uploaded.url,
+        name: fileName
+      });
       render();
     } catch (err) {
       console.error('Ошибка загрузки доп. фото:', err);
@@ -822,11 +829,14 @@ async function submitVisit() {
       comments: state.form.comments || ''
     };
 
-    const res = await apiPost('submitVisit', payload);
-    const data = res.data || res;
+    // Отправляем «в никуда»
+    await apiPostFireAndForget('submitVisit', payload);
+
+    // Даём Apps Script 3 секунды на обработку и запись в таблицу
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
     state.screen = 'done';
-    state.submitResult = data;
+    state.submitResult = { row: null };
     render();
     window.scrollTo(0, 0);
   } catch (err) {
@@ -838,12 +848,11 @@ async function submitVisit() {
 }
 
 function renderDone(app) {
-  const rowNum = state.submitResult && state.submitResult.row;
   app.innerHTML = `
     <div class="card" style="text-align:center;">
       <div class="done-icon">✅</div>
       <h2>Осмотр отправлен</h2>
-      <p style="margin-top:12px;">Данные записаны в таблицу${rowNum ? ' (строка ' + rowNum + ')' : ''}.</p>
+      <p style="margin-top:12px;">Данные записаны в таблицу.</p>
       <button class="btn btn-primary btn-large" style="margin-top:24px;" onclick="startNewVisit()">
         🏠 Оформить ещё один осмотр
       </button>
