@@ -81,8 +81,7 @@ function apiGet(action, payload) {
   });
 }
 
-// POST «выстрелил и забыл» — отправляет данные через скрытую форму,
-// не ждёт ответа (обход блокировки postMessage из Apps Script)
+// POST «выстрелил и забыл»
 function apiPostFireAndForget(action, payload) {
   return new Promise((resolve) => {
     const iframeName = 'iframe_target_' + (++_iframeCounter) + '_' + Date.now();
@@ -114,7 +113,6 @@ function apiPostFireAndForget(action, payload) {
     document.body.appendChild(form);
     form.submit();
 
-    // Не ждём postMessage — просто считаем, что запрос ушёл
     setTimeout(() => {
       try { form.remove(); } catch (e) {}
       try { iframe.remove(); } catch (e) {}
@@ -501,17 +499,17 @@ async function onPhotoSelected(event, stateKey) {
       const compressed = await compressImage(file);
       const fileName = buildFileName(divisionKey, objectKey, i + 1 + rs.photos.length);
 
-      // 1. Отправляем фото «в никуда» — не ждём ответа
+      // 1. Отправляем фото «в никуда»
       await apiPostFireAndForget('uploadPhoto', {
         base64: compressed,
         fileName: fileName,
         kvNumber: kv
       });
 
-      // 2. Проверяем статус — появилось ли фото на Drive, раз в 1 секунду
+      // 2. Проверяем статус — раз в 2 секунды, до 60 раз (120 секунд)
       let uploaded = null;
-      for (let attempt = 0; attempt < 30; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      for (let attempt = 0; attempt < 60; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
         try {
           const statusRes = await apiGet('getPhotoStatus', {
             kvNumber: kv,
@@ -528,7 +526,7 @@ async function onPhotoSelected(event, stateKey) {
       }
 
       if (!uploaded) {
-        throw new Error('Фото не загрузилось за 30 секунд');
+        throw new Error('Фото не загрузилось за 2 минуты. Проверьте интернет и попробуйте снова.');
       }
 
       rs.photos.push({
@@ -564,8 +562,8 @@ function compressImage(file) {
     reader.onload = (e) => {
       const img = new Image();
       img.onload = () => {
-        const MAX_WIDTH = 1600;
-        const MAX_HEIGHT = 1600;
+        const MAX_WIDTH = 1200;
+        const MAX_HEIGHT = 1200;
         let w = img.width;
         let h = img.height;
         if (w > MAX_WIDTH || h > MAX_HEIGHT) {
@@ -578,7 +576,7 @@ function compressImage(file) {
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, w, h);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
         const base64 = dataUrl.split(',')[1];
         resolve(base64);
       };
@@ -686,17 +684,15 @@ async function onExtraPhotoSelected(event) {
       const compressed = await compressImage(file);
       const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
 
-      // Отправляем «в никуда»
       await apiPostFireAndForget('uploadPhoto', {
         base64: compressed,
         fileName: fileName,
         kvNumber: kv
       });
 
-      // Ждём появления на Drive
       let uploaded = null;
-      for (let attempt = 0; attempt < 30; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
+      for (let attempt = 0; attempt < 60; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
         try {
           const statusRes = await apiGet('getPhotoStatus', { kvNumber: kv, fileName: fileName });
           const status = statusRes.data || statusRes;
@@ -708,7 +704,7 @@ async function onExtraPhotoSelected(event) {
       }
 
       if (!uploaded) {
-        throw new Error('Фото не загрузилось за 30 секунд');
+        throw new Error('Фото не загрузилось за 2 минуты. Проверьте интернет и попробуйте снова.');
       }
 
       state.form.extraPhotos.push({
@@ -829,10 +825,7 @@ async function submitVisit() {
       comments: state.form.comments || ''
     };
 
-    // Отправляем «в никуда»
     await apiPostFireAndForget('submitVisit', payload);
-
-    // Даём Apps Script 3 секунды на обработку и запись в таблицу
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     state.screen = 'done';
