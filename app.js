@@ -760,7 +760,7 @@ async function submitVisit() {
       comments: state.form.comments || ''
     };
 
-    const res = await apiCall('submitVisit', { payload: payload });
+    const res = await apiCall('submitVisit', payload);
     const data = res.data || res;
 
     state.screen = 'done';
