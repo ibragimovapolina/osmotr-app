@@ -42,6 +42,7 @@ let _iframeCounter = 0;
 function apiGet(action, payload) {
   return new Promise((resolve, reject) => {
     const callbackName = 'jsonp_cb_' + (++_jsonpCounter) + '_' + Date.now();
+    console.log('[apiGet] start', action, callbackName);
 
     const cleanup = () => {
       try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
@@ -55,8 +56,10 @@ function apiGet(action, payload) {
     params.set('payload', JSON.stringify(payload || {}));
 
     const url = API_URL + '?' + params.toString();
+    console.log('[apiGet] url', url);
 
     const timeout = setTimeout(() => {
+      console.warn('[apiGet] timeout', callbackName);
       cleanup();
       reject(new Error('Таймаут запроса'));
     }, 30000);
@@ -65,6 +68,7 @@ function apiGet(action, payload) {
     const originalReject = reject;
 
     window[callbackName] = function (result) {
+      console.log('[apiGet] callback', callbackName, result);
       clearTimeout(timeout);
       cleanup();
       if (result && result.ok === false) {
@@ -77,13 +81,19 @@ function apiGet(action, payload) {
     const script = document.createElement('script');
     script.id = callbackName;
     script.src = url;
-    script.onerror = function () {
+    script.onerror = function (e) {
+      console.error('[apiGet] script onerror', { url: url, event: e });
       clearTimeout(timeout);
       cleanup();
-      originalReject(new Error('Не удалось загрузить скрипт'));
+      originalReject(new Error('Не удалось загрузить скрипт: ' + url));
+    };
+    script.onload = function () {
+      console.log('[apiGet] script onload', callbackName);
     };
 
-    document.head.appendChild(script);
+    // ВАЖНО: добавляем в body, а не в head — так работает в мобильных браузерах
+    document.body.appendChild(script);
+    console.log('[apiGet] script appended');
   });
 }
 
