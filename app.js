@@ -21,7 +21,11 @@ const state = {
   queueStats: { pendingVisits: 0, pendingPhotos: 0, totalVisits: 0, syncedVisits: 0 },
   queueList: [],
   draftId: null,
-  nameMode: 'first'
+  nameMode: 'first',
+  visitsFilter: 'all',       // 'all' | 'synced' | 'pending'
+  visitsList: [],
+  expandedVisitId: null,     // какой осмотр раскрыт в подробностях
+  kvWarning: null            // предупреждение о повторном осмотре
 };
 
 // ================= СТАРТ =================
@@ -61,16 +65,16 @@ async function continueStartup() {
   }
 
   window.addEventListener('online', () => {
-    if (state.screen === 'home' || state.screen === 'queue') render();
+    if (['home', 'queue', 'visits'].includes(state.screen)) render();
   });
   window.addEventListener('offline', () => {
-    if (state.screen === 'home' || state.screen === 'queue') render();
+    if (['home', 'queue', 'visits'].includes(state.screen)) render();
   });
 }
 
 window.onQueueChanged = async function () {
   await refreshQueueStats();
-  if (state.screen === 'home' || state.screen === 'queue') render();
+  if (['home', 'queue', 'visits'].includes(state.screen)) render();
 };
 
 async function refreshQueueStats() {
@@ -133,6 +137,7 @@ function render() {
   if (state.screen === 'division')    return renderDivision(app);
   if (state.screen === 'saved')       return renderSaved(app);
   if (state.screen === 'queue')       return renderQueue(app);
+  if (state.screen === 'visits')      return renderVisits(app);
 }
 
 // ================= ЭКРАН ИМЕНИ =================
@@ -173,10 +178,7 @@ function onNameInput(value) {
 async function onSaveName() {
   const input = document.getElementById('nameInput');
   const name = String((input && input.value) || '').trim();
-  if (!name) {
-    alert('Пожалуйста, введите имя.');
-    return;
-  }
+  if (!name) { alert('Пожалуйста, введите имя.'); return; }
   await window.db.setUserName(name);
   state.user.name = name;
 
@@ -185,7 +187,6 @@ async function onSaveName() {
     state.screen = 'home';
     await refreshQueueStats();
     render();
-    alert('Имя сохранено: ' + name);
   } else {
     await continueStartup();
   }
@@ -244,6 +245,7 @@ function renderHome(app) {
 
     <div class="card">
       <button class="btn btn-primary btn-large" onclick="startNewVisit()">🏠 Новый осмотр</button>
+      <button class="btn btn-secondary" onclick="showVisits()">📋 Мои осмотры</button>
       <button class="btn btn-secondary" onclick="showDiagnostics()">🔍 Диагностика</button>
     </div>
   `;
@@ -265,6 +267,176 @@ async function showQueue() {
   window.scrollTo(0, 0);
 }
 
+// ================= ЭКРАН «МОИ ОСМОТРЫ» =================
+async function showVisits() {
+  if (!window.db || !window.db.getVisibleVisits) return;
+  state.visitsList = await window.db.getVisibleVisits();
+  state.expandedVisitId = null;
+  state.screen = 'visits';
+  render();
+  window.scrollTo(0, 0);
+}
+
+function setVisitsFilter(filter) {
+  state.visitsFilter = filter;
+  state.expandedVisitId = null;
+  render();
+}
+
+function toggleVisitDetails(clientId) {
+  state.expandedVisitId = (state.expandedVisitId === clientId) ? null : clientId;
+  render();
+}
+
+async function hideVisitFromList(clientId) {
+  if (!confirm('Скрыть этот осмотр из списка? Запись останется в базе, но не будет показываться.')) return;
+  await window.db.hideVisit(clientId);
+  state.visitsList = await window.db.getVisibleVisits();
+  state.expandedVisitId = null;
+  render();
+}
+
+function renderVisits(app) {
+  const all = state.visitsList || [];
+
+  // Применяем фильтр
+  let filtered = all;
+  if (state.visitsFilter === 'synced') filtered = all.filter(v => v.status === 'synced');
+  else if (state.visitsFilter === 'pending') filtered = all.filter(v => v.status !== 'synced');
+
+  // Сортировка: свежие сверху
+  filtered = filtered.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+
+  // Не больше 200
+  const limited = filtered.slice(0, 200);
+
+  const filterBtn = (key, label) => `
+    <button class="filter-btn ${state.visitsFilter === key ? 'active' : ''}"
+            onclick="setVisitsFilter('${key}')">${label}</button>
+  `;
+
+  const itemsHtml = limited.length
+    ? limited.map(v => renderVisitCard(v)).join('')
+    : '<div class="hint">Здесь пока ничего нет.</div>';
+
+  app.innerHTML = `
+    <div class="card">
+      <div class="step-header">
+        <h2>Мои осмотры</h2>
+        <p>Всего: ${all.length}. Показано: ${limited.length}.</p>
+      </div>
+
+      <div class="visits-filter">
+        ${filterBtn('all', 'Все')}
+        ${filterBtn('synced', 'Отправленные')}
+        ${filterBtn('pending', 'В очереди')}
+      </div>
+
+      ${itemsHtml}
+
+      ${all.length > 0 ? `
+        <button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="exportVisitsCsv()">📥 Скачать CSV</button>
+      ` : ''}
+      <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
+    </div>
+  `;
+}
+
+function renderVisitCard(v) {
+  const kv = v.payload && v.payload.kvNumber ? v.payload.kvNumber : '—';
+  const userName = (v.payload && v.payload.email) || '—';
+  const created = v.createdAt ? new Date(v.createdAt) : null;
+  const createdStr = created ? created.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+
+  let statusClass = 'pending';
+  let statusText = '⏳ В очереди';
+  if (v.status === 'synced') { statusClass = 'synced'; statusText = '✅ Отправлен'; }
+  else if (v.status === 'error') { statusClass = 'error'; statusText = '❌ Ошибка'; }
+  else if (v.status === 'syncing') { statusClass = 'pending'; statusText = '📤 Отправляется'; }
+
+  const isExpanded = state.expandedVisitId === v.clientId;
+
+  let detailsHtml = '';
+  if (isExpanded) {
+    const visitedAt = v.payload && v.payload.visitedAt ? new Date(v.payload.visitedAt) : null;
+    const visitedStr = visitedAt ? visitedAt.toLocaleString('ru-RU') : '—';
+    const comments = (v.payload && v.payload.comments) || '';
+    const photosCount = v.payload && v.payload.results
+      ? Object.keys(v.payload.results).reduce((sum, k) => sum + ((v.payload.results[k].photos || []).length), 0)
+      : 0;
+    const extraCount = (v.payload && v.payload.extraPhotos) ? v.payload.extraPhotos.length : 0;
+    const totalPhotos = photosCount + extraCount;
+
+    detailsHtml = `
+      <div class="visit-card-details">
+        <p><strong>Осмотрщик:</strong> ${escapeHtml(userName)}</p>
+        <p><strong>Дата осмотра:</strong> ${escapeHtml(visitedStr)}</p>
+        <p><strong>Фото:</strong> ${totalPhotos}</p>
+        ${comments ? `<p><strong>Комментарии:</strong> ${escapeHtml(comments)}</p>` : ''}
+        ${v.lastError ? `<p style="color:#c5221f;"><strong>Ошибка:</strong> ${escapeHtml(v.lastError)}</p>` : ''}
+        <div class="visit-card-actions">
+          <button class="btn btn-secondary" onclick="event.stopPropagation(); hideVisitFromList('${escapeAttr(v.clientId)}')">🚫 Скрыть из списка</button>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="visit-card" onclick="toggleVisitDetails('${escapeAttr(v.clientId)}')">
+      <div class="visit-card-title">
+        <span class="visit-card-kv">Кв. ${escapeHtml(kv)}</span>
+        <span class="visit-card-status ${statusClass}">${statusText}</span>
+      </div>
+      <div class="visit-card-sub">👤 ${escapeHtml(userName)} · ${escapeHtml(createdStr)}</div>
+      ${detailsHtml}
+    </div>
+  `;
+}
+
+function exportVisitsCsv() {
+  const rows = state.visitsList || [];
+  if (!rows.length) { alert('Нет данных для экспорта.'); return; }
+
+  const header = ['Квартира', 'Осмотрщик', 'Дата создания', 'Дата осмотра', 'Статус', 'Комментарии'];
+  const lines = [header.map(csvEscape).join(';')];
+
+  rows.forEach(v => {
+    const kv = v.payload && v.payload.kvNumber ? v.payload.kvNumber : '';
+    const userName = (v.payload && v.payload.email) || '';
+    const created = v.createdAt ? new Date(v.createdAt).toLocaleString('ru-RU') : '';
+    const visited = v.payload && v.payload.visitedAt ? new Date(v.payload.visitedAt).toLocaleString('ru-RU') : '';
+    let status = 'в очереди';
+    if (v.status === 'synced') status = 'отправлен';
+    else if (v.status === 'error') status = 'ошибка';
+    const comments = (v.payload && v.payload.comments) || '';
+
+    lines.push([kv, userName, created, visited, status, comments].map(csvEscape).join(';'));
+  });
+
+  const csv = '\uFEFF' + lines.join('\r\n'); // BOM для Excel + CRLF
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'osmotry_' + new Date().toISOString().substring(0, 10) + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 500);
+}
+
+function csvEscape(str) {
+  const s = String(str === null || str === undefined ? '' : str);
+  if (s.indexOf(';') !== -1 || s.indexOf('"') !== -1 || s.indexOf('\n') !== -1) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+// ================= ОЧЕРЕДЬ =================
 function renderQueue(app) {
   const visits = state.queueList || [];
   const pending = visits.filter(v => v.status !== 'synced');
@@ -413,6 +585,7 @@ function startNewVisit() {
   };
   state.submitResult = null;
   state.pendingDraft = null;
+  state.kvWarning = null;
   state.draftId = window.db.uuid();
   state.screen = 'newVisitKv';
   if (window.db && window.db.clearDraft) window.db.clearDraft().catch(() => {});
@@ -420,6 +593,15 @@ function startNewVisit() {
 }
 
 function renderNewVisitKv(app) {
+  const warning = state.kvWarning;
+  const warningHtml = warning ? `
+    <div class="kv-warning">
+      ${warning.type === 'synced'
+        ? `<strong>⚠ Квартира уже осматривалась.</strong><br>Дата: ${escapeHtml(warning.date)}<br>Осмотрщик: ${escapeHtml(warning.userName)}<br><br>Вы можете осмотреть её ещё раз — ничего не блокируется.`
+        : `<strong>⏳ Квартира уже в очереди на отправку.</strong><br>Дата: ${escapeHtml(warning.date)}<br>Осмотрщик: ${escapeHtml(warning.userName)}<br><br>Если это повторный осмотр — можно продолжить.`}
+    </div>
+  ` : '';
+
   app.innerHTML = `
     <div class="card">
       <div class="step-header">
@@ -432,6 +614,7 @@ function renderNewVisitKv(app) {
              placeholder="Например: 42" value="${escapeHtml(state.form.kvNumber)}"
              oninput="onKvInput(this.value)">
       <div id="kvResult"></div>
+      ${warningHtml}
       <button class="btn btn-primary btn-large" id="kvNextBtn" onclick="onKvNext()" disabled>Далее →</button>
       <button class="btn btn-secondary" onclick="goHome()">← Отмена</button>
     </div>
@@ -443,6 +626,7 @@ let _kvCheckTimeout = null;
 
 function onKvInput(value) {
   state.form.kvNumber = value;
+  state.kvWarning = null;
   const btn = document.getElementById('kvNextBtn');
   const result = document.getElementById('kvResult');
   if (btn) btn.disabled = true;
@@ -458,28 +642,56 @@ function onKvInput(value) {
 
       if (data && data.found) {
         state.form.apartment = data.data;
-        if (result) {
-          result.innerHTML = `
-            <div class="apartment-preview">
-              <div class="apartment-preview-title">✓ ${data.fromCache ? 'Найдено в кэше' : 'Найдено в справочнике'}</div>
-              <div class="apartment-preview-grid">
-                <div><span>Площадь:</span> ${escapeHtml(data.data.area || '—')}</div>
-                <div><span>Этаж:</span> ${escapeHtml(data.data.floor || '—')}</div>
-                <div><span>Комнат:</span> ${escapeHtml(data.data.roomsNum || '—')}</div>
-                <div><span>Санузлов:</span> ${escapeHtml(data.data.bathrooms || '—')}</div>
-              </div>
-            </div>
-          `;
+
+        // Ищем предыдущие осмотры этой квартиры
+        let previous = [];
+        try {
+          previous = await window.db.findVisitsByKv(kv);
+        } catch (e) { /* ignore */ }
+
+        if (previous.length > 0) {
+          const latest = previous[0];
+          const dt = latest.createdAt ? new Date(latest.createdAt).toLocaleString('ru-RU') : '—';
+          const userName = (latest.payload && latest.payload.email) || '—';
+          const type = latest.status === 'synced' ? 'synced' : 'pending';
+          state.kvWarning = { type, date: dt, userName };
+        } else {
+          state.kvWarning = null;
         }
-        if (btn) btn.disabled = false;
+
+        render();
       } else {
         state.form.apartment = null;
+        state.kvWarning = null;
         if (result) result.innerHTML = `<div class="apartment-not-found">⚠ Квартира "${escapeHtml(kv)}" не найдена в справочнике.</div>`;
       }
     } catch (err) {
       if (result) result.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
     }
   }, 400);
+}
+
+// Рендер результата проверки квартиры (без полной перерисовки)
+function renderKvResult() {
+  const result = document.getElementById('kvResult');
+  const btn = document.getElementById('kvNextBtn');
+  if (!result) return;
+
+  const apt = state.form.apartment;
+  if (!apt) { result.innerHTML = ''; if (btn) btn.disabled = true; return; }
+
+  result.innerHTML = `
+    <div class="apartment-preview">
+      <div class="apartment-preview-title">✓ Найдено в справочнике</div>
+      <div class="apartment-preview-grid">
+        <div><span>Площадь:</span> ${escapeHtml(apt.area || '—')}</div>
+        <div><span>Этаж:</span> ${escapeHtml(apt.floor || '—')}</div>
+        <div><span>Комнат:</span> ${escapeHtml(apt.roomsNum || '—')}</div>
+        <div><span>Санузлов:</span> ${escapeHtml(apt.bathrooms || '—')}</div>
+      </div>
+    </div>
+  `;
+  if (btn) btn.disabled = false;
 }
 
 async function checkApartmentSmart(kv) {
@@ -1120,6 +1332,7 @@ async function submitVisit() {
       status: 'pending',
       attempts: 0,
       lastError: '',
+      hidden: false,
       payload: payload
     });
 
