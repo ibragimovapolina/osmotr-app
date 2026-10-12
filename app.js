@@ -1,5 +1,5 @@
 // ================= НАСТРОЙКИ =================
-const API_URL = 'https://script.google.com/macros/s/AKfycbzWLCPKI12R4Xi4pujuiOByL_SOyFTZ5u03KnuWz5LI7vyFBB31y9XBDBx6JOIPbPZg/exec';
+const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -26,7 +26,6 @@ document.addEventListener('DOMContentLoaded', init);
 async function init() {
   state.user = { email: 'осмотрщик' };
 
-  // Проверяем, есть ли сохранённый черновик
   const draft = await checkDraftOnStart();
   state.pendingDraft = draft;
 
@@ -34,107 +33,73 @@ async function init() {
   render();
 }
 
-// ================= API =================
-let _jsonpCounter = 0;
-let _iframeCounter = 0;
+// ================= API (fetch через прокси) =================
 
-// GET через JSONP — для лёгких данных
-function apiGet(action, payload) {
-  return new Promise((resolve, reject) => {
-    const callbackName = 'jsonp_cb_' + (++_jsonpCounter) + '_' + Date.now();
-    console.log('[apiGet] start', action, callbackName);
+// GET-запрос — для лёгких данных
+async function apiGet(action, payload) {
+  const params = new URLSearchParams();
+  params.set('action', action);
+  params.set('payload', JSON.stringify(payload || {}));
 
-    const cleanup = () => {
-      try { delete window[callbackName]; } catch (e) { window[callbackName] = undefined; }
-      const script = document.getElementById(callbackName);
-      if (script) script.remove();
-    };
+  const url = API_URL + '?' + params.toString();
 
-    const params = new URLSearchParams();
-    params.set('action', action);
-    params.set('callback', callbackName);
-    params.set('payload', JSON.stringify(payload || {}));
-
-    const url = API_URL + '?' + params.toString();
-    console.log('[apiGet] url', url);
-
-    const timeout = setTimeout(() => {
-      console.warn('[apiGet] timeout', callbackName);
-      cleanup();
-      reject(new Error('Таймаут запроса'));
-    }, 30000);
-
-    const originalResolve = resolve;
-    const originalReject = reject;
-
-    window[callbackName] = function (result) {
-      console.log('[apiGet] callback', callbackName, result);
-      clearTimeout(timeout);
-      cleanup();
-      if (result && result.ok === false) {
-        originalReject(new Error(result.error || 'Неизвестная ошибка'));
-        return;
-      }
-      originalResolve(result);
-    };
-
-    const script = document.createElement('script');
-    script.id = callbackName;
-    script.src = url;
-    script.onerror = function (e) {
-      console.error('[apiGet] script onerror', { url: url, event: e });
-      clearTimeout(timeout);
-      cleanup();
-      originalReject(new Error('Не удалось загрузить скрипт: ' + url));
-    };
-    script.onload = function () {
-      console.log('[apiGet] script onload', callbackName);
-    };
-
-    // ВАЖНО: добавляем в body, а не в head — так работает в мобильных браузерах
-    document.body.appendChild(script);
-    console.log('[apiGet] script appended');
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { 'Accept': 'application/json' }
   });
+
+  if (!response.ok) {
+    throw new Error('HTTP ' + response.status);
+  }
+
+  const text = await response.text();
+
+  // Прокси может отдать JSONP-обёртку (test({...})) или чистый JSON
+  let jsonText = text.trim();
+  const match = jsonText.match(/^[^(]+\((.*)\);?\s*$/s);
+  if (match) {
+    jsonText = match[1];
+  }
+
+  const result = JSON.parse(jsonText);
+
+  if (result && result.ok === false) {
+    throw new Error(result.error || 'Неизвестная ошибка');
+  }
+  return result;
 }
 
-// POST «выстрелил и забыл»
-function apiPostFireAndForget(action, payload) {
-  return new Promise((resolve) => {
-    const iframeName = 'iframe_target_' + (++_iframeCounter) + '_' + Date.now();
+// POST-запрос — для тяжёлых данных (фото, отправка осмотра)
+async function apiPost(action, payload) {
+  const body = new URLSearchParams();
+  body.set('action', action);
+  body.set('payload', JSON.stringify(payload || {}));
 
-    const iframe = document.createElement('iframe');
-    iframe.name = iframeName;
-    iframe.id = iframeName;
-    iframe.style.display = 'none';
-    document.body.appendChild(iframe);
-
-    const form = document.createElement('form');
-    form.method = 'POST';
-    form.action = API_URL;
-    form.target = iframeName;
-    form.enctype = 'application/x-www-form-urlencoded';
-    form.style.display = 'none';
-
-    const addField = (name, value) => {
-      const input = document.createElement('input');
-      input.type = 'hidden';
-      input.name = name;
-      input.value = value;
-      form.appendChild(input);
-    };
-
-    addField('action', action);
-    addField('payload', JSON.stringify(payload || {}));
-
-    document.body.appendChild(form);
-    form.submit();
-
-    setTimeout(() => {
-      try { form.remove(); } catch (e) {}
-      try { iframe.remove(); } catch (e) {}
-      resolve({ ok: true, data: {} });
-    }, 500);
+  const response = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body.toString()
   });
+
+  if (!response.ok) {
+    throw new Error('HTTP ' + response.status);
+  }
+
+  const text = await response.text();
+
+  // Прокси может отдать JSONP-обёртку или чистый JSON
+  let jsonText = text.trim();
+  const match = jsonText.match(/^[^(]+\((.*)\);?\s*$/s);
+  if (match) {
+    jsonText = match[1];
+  }
+
+  const result = JSON.parse(jsonText);
+
+  if (result && result.ok === false) {
+    throw new Error(result.error || 'Неизвестная ошибка');
+  }
+  return result;
 }
 
 // ================= РЕНДЕРИНГ =================
@@ -193,7 +158,6 @@ function renderHome(app) {
   `;
 }
 
-// Продолжить черновик
 async function continueDraft() {
   if (!state.pendingDraft) return;
   restoreDraft(state.pendingDraft);
@@ -202,7 +166,6 @@ async function continueDraft() {
   window.scrollTo(0, 0);
 }
 
-// Удалить черновик
 async function discardDraft() {
   if (window.db && window.db.clearDraft) {
     await window.db.clearDraft();
@@ -222,7 +185,6 @@ function startNewVisit() {
   state.pendingDraft = null;
   state.screen = 'newVisitKv';
 
-  // Удаляем старый черновик
   if (window.db && window.db.clearDraft) {
     window.db.clearDraft().catch(() => {});
   }
@@ -566,37 +528,17 @@ async function onPhotoSelected(event, stateKey) {
       const compressed = await compressImage(file);
       const fileName = buildFileName(divisionKey, objectKey, i + 1 + rs.photos.length);
 
-      await apiPostFireAndForget('uploadPhoto', {
+      // Отправляем фото через прокси (POST)
+      const res = await apiPost('uploadPhoto', {
         base64: compressed,
         fileName: fileName,
         kvNumber: kv
       });
-
-      let uploaded = null;
-      for (let attempt = 0; attempt < 60; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        try {
-          const statusRes = await apiGet('getPhotoStatus', {
-            kvNumber: kv,
-            fileName: fileName
-          });
-          const status = statusRes.data || statusRes;
-          if (status && status.found) {
-            uploaded = status;
-            break;
-          }
-        } catch (e) {
-          // Продолжаем ждать
-        }
-      }
-
-      if (!uploaded) {
-        throw new Error('Фото не загрузилось за 2 минуты. Проверьте интернет и попробуйте снова.');
-      }
+      const data = res.data || res;
 
       rs.photos.push({
-        fileId: uploaded.fileId,
-        url: uploaded.url,
+        fileId: data.fileId,
+        url: data.url,
         name: fileName,
         objectKey: objectKey,
         divisionKey: divisionKey
@@ -754,32 +696,16 @@ async function onExtraPhotoSelected(event) {
       const compressed = await compressImage(file);
       const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
 
-      await apiPostFireAndForget('uploadPhoto', {
+      const res = await apiPost('uploadPhoto', {
         base64: compressed,
         fileName: fileName,
         kvNumber: kv
       });
-
-      let uploaded = null;
-      for (let attempt = 0; attempt < 60; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        try {
-          const statusRes = await apiGet('getPhotoStatus', { kvNumber: kv, fileName: fileName });
-          const status = statusRes.data || statusRes;
-          if (status && status.found) {
-            uploaded = status;
-            break;
-          }
-        } catch (e) {}
-      }
-
-      if (!uploaded) {
-        throw new Error('Фото не загрузилось за 2 минуты. Проверьте интернет и попробуйте снова.');
-      }
+      const data = res.data || res;
 
       state.form.extraPhotos.push({
-        fileId: uploaded.fileId,
-        url: uploaded.url,
+        fileId: data.fileId,
+        url: data.url,
         name: fileName
       });
       render();
@@ -899,10 +825,9 @@ async function submitVisit() {
       comments: state.form.comments || ''
     };
 
-    await apiPostFireAndForget('submitVisit', payload);
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await apiPost('submitVisit', payload);
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
-    // Удаляем черновик — осмотр отправлен
     if (window.db && window.db.clearDraft) {
       await window.db.clearDraft();
     }
@@ -935,10 +860,9 @@ function renderDone(app) {
   `;
 }
 
-// ================= АВТОСОХРАНЕНИЕ В INDEXEDDB =================
+// ================= АВТОСОХРАНЕНИЕ =================
 let _autoSaveTimeout = null;
 
-// Сохранить черновик немедленно
 function autoSave() {
   if (!window.db || !window.db.saveDraft) return;
 
@@ -962,7 +886,6 @@ function autoSave() {
   });
 }
 
-// Сохранить с задержкой (для текстовых полей)
 function debouncedAutoSave() {
   if (_autoSaveTimeout) clearTimeout(_autoSaveTimeout);
   _autoSaveTimeout = setTimeout(() => {
@@ -970,7 +893,6 @@ function debouncedAutoSave() {
   }, 800);
 }
 
-// Проверить черновик при старте
 async function checkDraftOnStart() {
   if (!window.db || !window.db.loadDraft) return null;
   try {
@@ -984,7 +906,6 @@ async function checkDraftOnStart() {
   return null;
 }
 
-// Восстановить черновик в состояние
 function restoreDraft(draft) {
   if (!draft || !draft.form) return;
   state.form = {
@@ -1000,7 +921,6 @@ function restoreDraft(draft) {
   };
   state.screen = draft.screen || 'newVisitKv';
 
-  // Если пользователь был на шаге 1 без apartment — вернём его на шаг 1
   if (!state.form.apartment && state.screen === 'newVisitRef') {
     state.screen = 'newVisitKv';
   }
