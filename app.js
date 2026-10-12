@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -87,22 +87,33 @@ async function refreshQueueStats() {
 }
 
 // ================= API =================
-async function apiGet(action, payload) {
+async function apiGet(action, payload, timeoutMs) {
+  // Если офлайн — сразу ошибка, не ждём
+  if (!navigator.onLine) {
+    throw new Error('Нет сети');
+  }
+
   const params = new URLSearchParams();
   params.set('action', action);
   params.set('payload', JSON.stringify(payload || {}));
   const url = API_URL + '?' + params.toString();
 
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: { 'Accept': 'application/json' }
-  });
-  if (!response.ok) throw new Error('HTTP ' + response.status);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs || 10000);
 
-  const text = await response.text();
-  return parseResponse(text);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const text = await response.text();
+    return parseResponse(text);
+  } finally {
+    clearTimeout(timer);
+  }
 }
-
 function parseResponse(text) {
   let t = String(text || '').trim();
   const match = t.match(/^[a-zA-Z0-9_$]+\((.*)\);?\s*$/s);
@@ -943,10 +954,24 @@ function removeKvWarningBlock() {
 
 async function checkApartmentSmart(kv) {
   const kvKey = String(kv).trim().toLowerCase();
+
+  // 1) Если офлайн — только локальный справочник
+  if (!navigator.onLine) {
+    const ref = await window.db.getReference();
+    if (ref && ref[kvKey]) {
+      return { found: true, kv: kv, data: ref[kvKey], fromCache: true };
+    }
+    // Локально нет — точно не найдём
+    return { found: false, kv: kv, fromCache: true, error: 'Офлайн, квартира не найдена в локальном справочнике' };
+  }
+
+  // 2) Онлайн — пробуем сеть с коротким таймаутом
   try {
-    const res = await apiGet('checkApartment', { kvNumber: kv });
+    const res = await apiGet('checkApartment', { kvNumber: kv }, 8000);
     return res.data || res;
   } catch (netErr) {
+    // 3) Сеть есть, но не ответила — фолбэк на кэш
+    console.warn('[checkApartmentSmart] сеть не ответила, берём локальный кэш:', netErr.message);
     const ref = await window.db.getReference();
     if (ref && ref[kvKey]) {
       return { found: true, kv: kv, data: ref[kvKey], fromCache: true };
@@ -954,7 +979,6 @@ async function checkApartmentSmart(kv) {
     throw netErr;
   }
 }
-
 function onKvNext() {
   if (!state.form.apartment) return;
   state.screen = 'newVisitRef';
