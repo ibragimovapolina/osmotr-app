@@ -20,7 +20,7 @@ const state = {
   pendingDraft: null,
   queueStats: { pendingVisits: 0, pendingPhotos: 0, totalVisits: 0 },
   queueList: [],
-  draftId: null // UUID черновика — используется для привязки фото
+  draftId: null
 };
 
 // ================= СТАРТ =================
@@ -41,6 +41,13 @@ async function init() {
   if (window.sync && window.sync.startAutoSync) {
     window.sync.startAutoSync();
   }
+
+  window.addEventListener('online', () => {
+    if (state.screen === 'home' || state.screen === 'queue') render();
+  });
+  window.addEventListener('offline', () => {
+    if (state.screen === 'home' || state.screen === 'queue') render();
+  });
 }
 
 window.onQueueChanged = async function () {
@@ -116,11 +123,18 @@ function renderHome(app) {
     ? `Квартира ${state.pendingDraft.form.kvNumber || '—'}` : '';
 
   const pending = state.queueStats.pendingVisits || 0;
+  const online = navigator.onLine;
 
   app.innerHTML = `
     <div class="user-greeting">
       <div class="avatar">О</div>
       <div class="email">Осмотр квартир</div>
+    </div>
+
+    <div class="card" style="padding:12px 16px;background:${online ? '#e6f4ea' : '#fce8e6'};border:1px solid ${online ? '#34a853' : '#ea4335'};">
+      <div style="font-size:14px;color:${online ? '#137333' : '#c5221f'};">
+        ${online ? '🟢 Онлайн' : '🔴 Офлайн — данные сохраняются локально'}
+      </div>
     </div>
 
     ${hasDraft ? `
@@ -134,9 +148,9 @@ function renderHome(app) {
     ${pending > 0 ? `
     <div class="card" style="background:#e8f0fe;border:1px solid #1a73e8;">
       <h2 style="margin-bottom:8px;">📤 Ожидают отправки: ${pending}</h2>
-      <p style="color:#1a73e8;font-size:14px;">${navigator.onLine ? 'Идёт отправка…' : 'Появятся в сети — отправятся автоматически.'}</p>
+      <p style="color:#1a73e8;font-size:14px;">${online ? 'Идёт отправка…' : 'Появятся в сети — отправятся автоматически.'}</p>
       <button class="btn btn-primary" style="margin-top:12px;" onclick="showQueue()">📋 Открыть очередь</button>
-      ${navigator.onLine ? `<button class="btn btn-secondary" style="margin-top:8px;" onclick="syncAllNow()">🔄 Отправить всё сейчас</button>` : ''}
+      ${online ? `<button class="btn btn-secondary" style="margin-top:8px;" onclick="syncAllNow()">🔄 Отправить всё сейчас</button>` : ''}
     </div>` : ''}
 
     <div class="card">
@@ -147,7 +161,9 @@ function renderHome(app) {
 }
 
 async function syncAllNow() {
-  if (!window.sync || !window.sync.syncNow) return;
+  if (!window.sync) return;
+  // Сбрасываем попытки, чтобы не застряло
+  if (window.sync.resetAllAttempts) await window.sync.resetAllAttempts();
   await window.sync.syncNow();
   await refreshQueueStats();
   render();
@@ -169,10 +185,11 @@ function renderQueue(app) {
     ? pending.map(v => {
         const kv = v.payload && v.payload.kvNumber ? v.payload.kvNumber : '—';
         const when = v.createdAt ? new Date(v.createdAt).toLocaleString('ru-RU') : '';
+        const attempts = v.attempts || 0;
         const statusMap = {
-          pending: '⏳ Ожидает',
+          pending: '⏳ Ожидает отправки',
           syncing: '📤 Отправляется',
-          error: '❌ Ошибка: ' + (v.lastError || '—')
+          error: `❌ Ошибка (попыток: ${attempts}): ` + (v.lastError || '—')
         };
         const statusText = statusMap[v.status] || v.status;
         return `
@@ -193,14 +210,36 @@ function renderQueue(app) {
         <p>Всего в очереди: ${pending.length}</p>
       </div>
       ${itemsHtml}
-      ${pending.length && navigator.onLine ? `<button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="syncAllNow()">🔄 Отправить всё сейчас</button>` : ''}
+      ${pending.length ? `
+        <button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="resetAttemptsNow()">🔄 Сбросить попытки</button>
+      ` : ''}
+      ${pending.length && navigator.onLine ? `<button class="btn btn-primary btn-large" style="margin-top:8px;" onclick="syncAllNow()">📤 Отправить всё сейчас</button>` : ''}
       <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
     </div>
   `;
 }
 
+async function resetAttemptsNow() {
+  if (!window.sync || !window.sync.resetAllAttempts) return;
+  await window.sync.resetAllAttempts();
+  await refreshQueueStats();
+  state.queueList = await window.db.getAllVisits();
+  render();
+  alert('Попытки сброшены. Можете нажать «Отправить всё сейчас».');
+}
+
 async function deleteQueuedVisit(clientId) {
-  if (!confirm('Удалить осмотр из очереди? Данные не будут отправлены.')) return;
+  if (!confirm('Удалить осмотр из очереди? Данные и фото не будут отправлены.')) return;
+
+  // Сначала удаляем все фото этого осмотра
+  try {
+    const photos = await window.db.getPhotosForVisit(clientId);
+    for (const p of photos) {
+      await window.db.deletePhoto(p.photoId);
+    }
+  } catch (e) { console.warn('Не удалось удалить фото:', e); }
+
+  // Потом сам осмотр
   if (window.db && window.db.deleteVisit) {
     await window.db.deleteVisit(clientId);
   }
@@ -251,7 +290,6 @@ async function continueDraft() {
 }
 
 async function discardDraft() {
-  // Удаляем все фото черновика
   if (state.draftId) {
     try {
       const photos = await window.db.getPhotosForVisit(state.draftId);
@@ -273,7 +311,7 @@ function startNewVisit() {
   };
   state.submitResult = null;
   state.pendingDraft = null;
-  state.draftId = window.db.uuid(); // новый ID черновика
+  state.draftId = window.db.uuid();
   state.screen = 'newVisitKv';
   if (window.db && window.db.clearDraft) window.db.clearDraft().catch(() => {});
   render();
@@ -625,7 +663,6 @@ async function onPhotoSelected(event, stateKey) {
       const photoId = window.db.uuid();
       const localUrl = URL.createObjectURL(blob);
 
-      // Сохраняем в IndexedDB
       await window.db.addPhoto({
         photoId: photoId,
         visitClientId: draftId,
@@ -673,7 +710,6 @@ function removePhoto(stateKey, index) {
   autoSave();
 }
 
-// Сжатие сразу в Blob (не base64)
 function compressImageToBlob(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -943,14 +979,6 @@ async function submitVisit() {
   try {
     const clientId = state.draftId || window.db.uuid();
 
-    // Переносим фото в очередь осмотра (переименовываем visitClientId)
-    const photos = await window.db.getPhotosForVisit(clientId);
-    for (const p of photos) {
-      await window.db.updatePhoto(p.photoId, { visitClientId: clientId });
-    }
-
-    // Обновляем payload — фото теперь берутся из IndexedDB по clientId,
-    // а в payload.results.photos оставляем только локальные ссылки без url
     const cleanResults = {};
     Object.keys(state.form.results).forEach(key => {
       const rs = state.form.results[key];
