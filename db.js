@@ -233,10 +233,27 @@ async function getSyncedVisits() {
   return all.filter(v => v.status === 'synced');
 }
 
+// Скрытые записи (hidden: true) — не показываем в списке
+async function getVisibleVisits() {
+  const all = await getAllVisits();
+  return all.filter(v => !v.hidden);
+}
+
+// Все осмотры по конкретному номеру квартиры (для предупреждения)
 async function findVisitsByKv(kvNumber) {
   const all = await getAllVisits();
   const kv = String(kvNumber || '').trim().toLowerCase();
-  return all.filter(v => v.payload && String(v.payload.kvNumber || '').trim().toLowerCase() === kv);
+  return all
+    .filter(v => !v.hidden && v.payload && String(v.payload.kvNumber || '').trim().toLowerCase() === kv)
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+}
+
+async function hideVisit(clientId) {
+  return await updateVisit(clientId, { hidden: true });
+}
+
+async function unhideVisit(clientId) {
+  return await updateVisit(clientId, { hidden: false });
 }
 
 async function deleteVisit(clientId) {
@@ -334,7 +351,6 @@ async function deletePhoto(photoId) {
   } catch (e) { return false; }
 }
 
-// Счётчики фото для прогресса: { total, uploaded }
 async function getPhotoCountsForVisit(visitClientId) {
   const photos = await getPhotosForVisit(visitClientId);
   return {
@@ -349,7 +365,7 @@ async function getQueueStats() {
   const photos = await getAllPhotos();
 
   return {
-    pendingVisits: visits.filter(v => v.status !== 'synced').length,
+    pendingVisits: visits.filter(v => v.status !== 'synced' && !v.hidden).length,
     pendingPhotos: photos.filter(p => p.status !== 'uploaded').length,
     totalVisits: visits.length,
     syncedVisits: visits.filter(v => v.status === 'synced').length
@@ -432,7 +448,8 @@ window.db = {
   getReference, setReference,
   getRemarks, setRemarks,
   getMarks, setMarks,
-  addVisit, getVisit, updateVisit, getAllVisits, getPendingVisits, getSyncedVisits, findVisitsByKv, deleteVisit,
+  addVisit, getVisit, updateVisit, getAllVisits, getPendingVisits, getSyncedVisits,
+  getVisibleVisits, findVisitsByKv, hideVisit, unhideVisit, deleteVisit,
   resetStuckSyncing,
   addPhoto, getPhoto, updatePhoto, getPhotosForVisit, getAllPhotos, deletePhoto,
   getPhotoCountsForVisit,
