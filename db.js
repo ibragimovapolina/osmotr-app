@@ -8,8 +8,6 @@
 //   meta      — версии, даты синхронизации
 //   visits    — очередь осмотров        (key: clientId)
 //   photos    — очередь фото            (key: photoId, индекс по visitClientId)
-//
-// Все ошибки глушатся — приложение не падает из-за IndexedDB.
 
 const DB_NAME = 'osmotr_db';
 const DB_VERSION = 2;
@@ -72,7 +70,6 @@ function req(request) {
 }
 
 // ================= DRAFTS =================
-
 async function saveDraft(data) {
   try {
     const db = await openDB();
@@ -112,7 +109,6 @@ async function hasDraft() {
 }
 
 // ================= META =================
-
 async function getMeta(key) {
   try {
     const db = await openDB();
@@ -134,8 +130,7 @@ async function setMeta(key, value) {
   } catch (e) { return false; }
 }
 
-// ================= REFERENCE / REMARKS / MARKS =================
-
+// ================= REFERENCE =================
 async function getReference() {
   try {
     const db = await openDB();
@@ -156,6 +151,7 @@ async function setReference(map) {
   } catch (e) { return false; }
 }
 
+// ================= REMARKS =================
 async function getRemarks() {
   try {
     const db = await openDB();
@@ -176,6 +172,7 @@ async function setRemarks(map) {
   } catch (e) { return false; }
 }
 
+// ================= MARKS =================
 async function getMarks() {
   try {
     const db = await openDB();
@@ -197,7 +194,6 @@ async function setMarks(map) {
 }
 
 // ================= VISITS =================
-
 async function addVisit(visit) {
   try {
     const db = await openDB();
@@ -254,7 +250,6 @@ async function deleteVisit(clientId) {
 }
 
 // ================= PHOTOS =================
-
 async function addPhoto(photo) {
   try {
     const db = await openDB();
@@ -307,7 +302,6 @@ async function deletePhoto(photoId) {
 }
 
 // ================= СТАТИСТИКА =================
-
 async function getQueueStats() {
   const visits = await getAllVisits();
   let photos = [];
@@ -326,7 +320,6 @@ async function getQueueStats() {
 }
 
 // ================= UUID =================
-
 function uuid() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
@@ -336,16 +329,18 @@ function uuid() {
   });
 }
 
-// ================= ЭКСПОРТ =================
-// Тихое обновление справочника, правил и марок из сети
+// ================= ТИХОЕ ОБНОВЛЕНИЕ СПРАВОЧНИКА =================
 async function silentUpdateReference() {
   if (!navigator.onLine) return false;
+  if (typeof apiGet !== 'function') {
+    console.warn('[sync] apiGet ещё не загружен');
+    return false;
+  }
   try {
     const ver = await apiGet('getVersion');
     const serverVersion = (ver && ver.data) ? ver.data : ver;
     const localVersion = await getMeta('version');
 
-    // Если версия 0 или её нет — качаем всегда (один раз)
     const noVersionYet =
       !serverVersion ||
       String(serverVersion.reference) === '0' ||
@@ -387,29 +382,7 @@ async function silentUpdateReference() {
   }
 }
 
-    console.log('[sync] Тянем справочник…');
-    const refRes = await apiGet('getReference');
-    const refData = (refRes && refRes.data) ? refRes.data : refRes;
-    await setReference(refData);
-
-    console.log('[sync] Тянем правила замечаний…');
-    const remRes = await apiGet('getRemarks');
-    const remData = (remRes && remRes.data) ? remRes.data : remRes;
-    await setRemarks(remData);
-
-    console.log('[sync] Тянем марки окон…');
-    const markRes = await apiGet('getMarks');
-    const markData = (markRes && markRes.data) ? markRes.data : markRes;
-    await setMarks(markData);
-
-    await setMeta('version', serverVersion);
-    console.log('[sync] Готово. Справочник:', Object.keys(refData).length, 'квартир');
-    return true;
-  } catch (err) {
-    console.warn('[sync] silentUpdateReference:', err.message);
-    return false;
-  }
-}
+// ================= ЭКСПОРТ =================
 window.db = {
   saveDraft, loadDraft, clearDraft, hasDraft,
   getMeta, setMeta,
