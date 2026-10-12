@@ -500,7 +500,13 @@ async function getFormDataSmart(apartment) {
     const res = await apiGet('getFormData', { apartment: apartment });
     return res.data || res;
   } catch (netErr) {
-    throw netErr;
+    // Фолбэк на локальную сборку из кэша
+    console.warn('[form] Сеть недоступна, собираем форму локально:', netErr.message);
+    const remarks = await window.db.getRemarks();
+    if (remarks && window.localForm && window.localForm.buildFormData) {
+      return window.localForm.buildFormData(apartment, remarks);
+    }
+    throw new Error('Нет сети и нет локального кэша. Откройте приложение один раз онлайн.');
   }
 }
 
