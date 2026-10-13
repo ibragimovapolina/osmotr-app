@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.2';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1307,8 +1307,8 @@ function compressImageToBlob(file) {
     reader.onload = (e) => {
       const img = new Image();
       img.onload = () => {
-        const MAX_WIDTH = 700;
-        const MAX_HEIGHT = 700;
+        const MAX_WIDTH = 1000;
+        const MAX_HEIGHT = 1000;
         let w = img.width, h = img.height;
         if (w > MAX_WIDTH || h > MAX_HEIGHT) {
           const ratio = Math.min(MAX_WIDTH / w, MAX_HEIGHT / h);
@@ -1326,7 +1326,7 @@ function compressImageToBlob(file) {
             else resolve(blob);
           },
           'image/jpeg',
-          0.6
+          0.7
         );
       };
       img.onerror = () => reject(new Error('Не удалось прочитать изображение'));
