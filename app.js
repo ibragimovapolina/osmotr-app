@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.0.4';
+const APP_VERSION = '1.0.5';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -28,8 +28,7 @@ const state = {
   expandedVisitId: null,
   kvWarning: null,
   settingsMessage: null,
-  // Для модального окна объёма
-  volumeModal: null // { stateKey, variant, unit, value }
+  volumeModal: null
 };
 
 // ================= СТАРТ =================
@@ -215,7 +214,7 @@ function confirmVolume() {
   const val = String(m.value || '').trim();
   if (!val) return;
 
-  const rs = state.form.results[m.stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
+  const rs = state.form.results[m.stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
   if (!rs.volumes) rs.volumes = {};
   rs.volumes[m.variant] = { value: val, unit: m.unit };
   state.form.results[m.stateKey] = rs;
@@ -1087,8 +1086,10 @@ function renderDivision(app) {
 
 function renderObjectCard(divKey, obj) {
   const stateKey = divKey + '.' + obj.key;
-  const objState = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
+  const objState = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
   if (!objState.volumes) objState.volumes = {};
+  if (!objState.commonPhotos) objState.commonPhotos = [];
+  if (!objState.photosByVariant) objState.photosByVariant = {};
 
   const variantsHtml = (obj.variants || []).map((v) => {
     const isSelected = objState.selected.includes(v.variant);
@@ -1113,7 +1114,9 @@ function renderObjectCard(divKey, obj) {
   const customHtml = `<textarea class="custom-input" rows="2" placeholder="Своё замечание (если нужно)"
     oninput="onCustomInput('${escapeAttr(stateKey)}', this.value)">${escapeHtml(objState.custom || '')}</textarea>`;
 
-  const photoBlockHtml = renderPhotoBlock(stateKey, objState);
+  // Блок фото по каждому замечанию + Общий вид
+  const photoSectionsHtml = buildPhotoSections(stateKey, objState);
+
   const error = objState.error ? `<div class="obj-error">${escapeHtml(objState.error)}</div>` : '';
 
   return `
@@ -1121,16 +1124,75 @@ function renderObjectCard(divKey, obj) {
       <div class="object-title">${escapeHtml(obj.label)}</div>
       <div class="chips-row">${noIssuesHtml}${variantsHtml}</div>
       ${customHtml}
-      ${photoBlockHtml}
+      <div class="photo-sections">${photoSectionsHtml}</div>
       ${error}
+    </div>
+  `;
+}
+
+function buildPhotoSections(stateKey, objState) {
+  const sections = [];
+
+  // Общий вид
+  sections.push(renderPhotoSection(
+    stateKey,
+    '__common__',
+    'Общий вид',
+    objState.commonPhotos || [],
+    state.form.uploading[stateKey + '__common__']
+  ));
+
+  // По каждому выбранному замечанию
+  (objState.selected || []).forEach(variant => {
+    const photos = (objState.photosByVariant && objState.photosByVariant[variant]) || [];
+    sections.push(renderPhotoSection(
+      stateKey,
+      variant,
+      variant,
+      photos,
+      state.form.uploading[stateKey + '__' + variant]
+    ));
+  });
+
+  return sections.join('');
+}
+
+function renderPhotoSection(stateKey, variantKey, title, photos, uploading) {
+  const photoItemsHtml = photos.map((p, i) => `
+    <div class="photo-item">
+      <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
+      <button type="button" class="photo-remove" onclick="removePhotoFromSection('${escapeAttr(stateKey)}', '${escapeAttr(variantKey)}', ${i})">×</button>
+    </div>
+  `).join('');
+
+  let uploadingHtml = '';
+  if (uploading) {
+    uploadingHtml = `
+      <div class="photo-item photo-uploading">
+        <div class="photo-spinner"></div>
+        <div class="photo-uploading-text">${uploading.current} из ${uploading.total}</div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="photo-section" data-section="${escapeAttr(stateKey)}::${escapeAttr(variantKey)}">
+      <div class="photo-section-title">📷 ${escapeHtml(title)}</div>
+      <div class="photo-list">${photoItemsHtml}${uploadingHtml}</div>
+      <label class="photo-add-label">
+        <input type="file" accept="image/*" multiple style="display:none"
+               onchange="onPhotoSelected2(event, '${escapeAttr(stateKey)}', '${escapeAttr(variantKey)}')">
+        <span class="photo-add-btn">📷 Добавить фото</span>
+      </label>
     </div>
   `;
 }
 
 // Обработка нажатия на чип
 function onChipClick(stateKey, variant, requireVolume, unit) {
-  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
+  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
   if (!rs.volumes) rs.volumes = {};
+  if (!rs.photosByVariant) rs.photosByVariant = {};
   rs.noIssues = false;
 
   const i = rs.selected.indexOf(variant);
@@ -1140,6 +1202,16 @@ function onChipClick(stateKey, variant, requireVolume, unit) {
     // снимаем
     rs.selected.splice(i, 1);
     delete rs.volumes[variant];
+
+    // Удаляем фото к этому замечанию (по требованию)
+    const photosToDelete = rs.photosByVariant[variant] || [];
+    photosToDelete.forEach(p => {
+      if (p && p.photoId && window.db && window.db.deletePhoto) {
+        window.db.deletePhoto(p.photoId).catch(() => {});
+      }
+    });
+    delete rs.photosByVariant[variant];
+
     rs.error = null;
     state.form.results[stateKey] = rs;
     updateObjectCard(stateKey);
@@ -1153,8 +1225,7 @@ function onChipClick(stateKey, variant, requireVolume, unit) {
   state.form.results[stateKey] = rs;
 
   if (requireVolume) {
-    // открываем модальное окно
-    updateObjectCard(stateKey); // покажем, что чип выбран
+    updateObjectCard(stateKey);
     openVolumeModal(stateKey, variant, unit, rs.volumes[variant] ? rs.volumes[variant].value : '');
   } else {
     updateObjectCard(stateKey);
@@ -1162,47 +1233,28 @@ function onChipClick(stateKey, variant, requireVolume, unit) {
   }
 }
 
-// Редактирование объёма по тапу на плашку
 function editVolume(stateKey, variant, unit) {
   const rs = state.form.results[stateKey] || { volumes: {} };
   const current = (rs.volumes && rs.volumes[variant]) ? rs.volumes[variant].value : '';
   openVolumeModal(stateKey, variant, unit, current);
 }
 
-function renderPhotoBlock(stateKey, objState) {
-  const photos = objState.photos || [];
-  const uploading = state.form.uploading[stateKey];
-  let photoItemsHtml = photos.map((p, i) => `
-    <div class="photo-item">
-      <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
-      <button type="button" class="photo-remove" onclick="removePhoto('${escapeAttr(stateKey)}', ${i})">×</button>
-    </div>
-  `).join('');
-  let uploadingHtml = '';
-  if (uploading) {
-    uploadingHtml = `
-      <div class="photo-item photo-uploading">
-        <div class="photo-spinner"></div>
-        <div class="photo-uploading-text">${uploading.current} из ${uploading.total}</div>
-      </div>
-    `;
-  }
-  return `
-    <div class="photo-block">
-      <div class="photo-list">${photoItemsHtml}${uploadingHtml}</div>
-      <label class="photo-add-label">
-        <input type="file" accept="image/*" multiple style="display:none"
-               onchange="onPhotoSelected(event, '${escapeAttr(stateKey)}')">
-        <span class="photo-add-btn">📷 Добавить фото</span>
-      </label>
-    </div>
-  `;
-}
-
 function toggleNoIssues(stateKey) {
-  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
+  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
   rs.noIssues = !rs.noIssues;
-  if (rs.noIssues) { rs.selected = []; rs.volumes = {}; }
+  if (rs.noIssues) {
+    // Удаляем все фото по замечаниям
+    Object.keys(rs.photosByVariant || {}).forEach(variant => {
+      (rs.photosByVariant[variant] || []).forEach(p => {
+        if (p && p.photoId && window.db && window.db.deletePhoto) {
+          window.db.deletePhoto(p.photoId).catch(() => {});
+        }
+      });
+    });
+    rs.selected = [];
+    rs.volumes = {};
+    rs.photosByVariant = {};
+  }
   rs.error = null;
   state.form.results[stateKey] = rs;
   updateObjectCard(stateKey);
@@ -1210,42 +1262,78 @@ function toggleNoIssues(stateKey) {
 }
 
 function onCustomInput(stateKey, value) {
-  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
+  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
   rs.custom = value;
   rs.error = null;
   state.form.results[stateKey] = rs;
   debouncedAutoSave();
 }
 
-// ================= ФОТО =================
-async function onPhotoSelected(event, stateKey) {
+// ================= ФОТО (по секциям) =================
+async function onPhotoSelected2(event, stateKey, variantKey) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
   event.target.value = '';
-  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
-  if (!rs.photos) rs.photos = [];
-  state.form.results[stateKey] = rs;
-  state.form.uploading[stateKey] = { current: 0, total: files.length };
+
+  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
+  if (!rs.commonPhotos) rs.commonPhotos = [];
+  if (!rs.photosByVariant) rs.photosByVariant = {};
+
+  const uploadKey = stateKey + (variantKey === '__common__' ? '__common__' : ('__' + variantKey));
+  state.form.uploading[uploadKey] = { current: 0, total: files.length };
   updateObjectCard(stateKey);
+
   const kv = state.form.kvNumber;
   const divisionKey = stateKey.split('.')[0];
   const objectKey = stateKey.split('.')[1];
   const draftId = state.draftId || (state.draftId = window.db.uuid());
+
+  const isCommon = variantKey === '__common__';
+  const photosArray = isCommon ? rs.commonPhotos : (rs.photosByVariant[variantKey] || []);
+
   for (let i = 0; i < files.length; i++) {
-    state.form.uploading[stateKey] = { current: i + 1, total: files.length };
+    state.form.uploading[uploadKey] = { current: i + 1, total: files.length };
     updateObjectCard(stateKey);
+
     try {
       const file = files[i];
       const blob = await compressImageToBlob(file);
-      const fileName = buildFileName(divisionKey, objectKey, i + 1 + rs.photos.length);
+      const fileName = buildFileName(divisionKey, objectKey, i + 1 + photosArray.length);
       const photoId = window.db.uuid();
       const localUrl = URL.createObjectURL(blob);
-      await window.db.addPhoto({
-        photoId: photoId, visitClientId: draftId, stateKey: stateKey,
-        fileName: fileName, kvNumber: kv, blob: blob,
-        status: 'pending', attempts: 0, lastError: '', remote: null, localUrl: localUrl
-      });
-      rs.photos.push({ photoId: photoId, localUrl: localUrl, name: fileName, objectKey: objectKey, divisionKey: divisionKey });
+
+      const photoRecord = {
+        photoId: photoId,
+        visitClientId: draftId,
+        stateKey: stateKey,
+        variantKey: isCommon ? '' : variantKey,   // ⚠️ ключ привязки к замечанию
+        fileName: fileName,
+        kvNumber: kv,
+        blob: blob,
+        status: 'pending',
+        attempts: 0,
+        lastError: '',
+        remote: null,
+        localUrl: localUrl
+      };
+      await window.db.addPhoto(photoRecord);
+
+      const photoItem = {
+        photoId: photoId,
+        localUrl: localUrl,
+        name: fileName,
+        objectKey: objectKey,
+        divisionKey: divisionKey,
+        variantKey: isCommon ? '' : variantKey
+      };
+
+      if (isCommon) {
+        rs.commonPhotos.push(photoItem);
+      } else {
+        if (!rs.photosByVariant[variantKey]) rs.photosByVariant[variantKey] = [];
+        rs.photosByVariant[variantKey].push(photoItem);
+      }
+
       state.form.results[stateKey] = rs;
       updateObjectCard(stateKey);
       autoSave();
@@ -1254,19 +1342,28 @@ async function onPhotoSelected(event, stateKey) {
       alert('Не удалось сохранить фото: ' + (err.message || err));
     }
   }
-  delete state.form.uploading[stateKey];
+
+  delete state.form.uploading[uploadKey];
   updateObjectCard(stateKey);
 }
 
-function removePhoto(stateKey, index) {
+function removePhotoFromSection(stateKey, variantKey, index) {
   const rs = state.form.results[stateKey];
-  if (!rs || !rs.photos) return;
+  if (!rs) return;
   if (!confirm('Удалить это фото?')) return;
-  const photo = rs.photos[index];
+
+  const isCommon = variantKey === '__common__';
+  const arr = isCommon ? (rs.commonPhotos || []) : ((rs.photosByVariant && rs.photosByVariant[variantKey]) || []);
+
+  const photo = arr[index];
   if (photo && photo.photoId && window.db && window.db.deletePhoto) {
     window.db.deletePhoto(photo.photoId).catch(() => {});
   }
-  rs.photos.splice(index, 1);
+  arr.splice(index, 1);
+
+  if (isCommon) rs.commonPhotos = arr;
+  else rs.photosByVariant[variantKey] = arr;
+
   state.form.results[stateKey] = rs;
   updateObjectCard(stateKey);
   autoSave();
@@ -1399,7 +1496,7 @@ async function onExtraPhotoSelected(event) {
       const photoId = window.db.uuid();
       const localUrl = URL.createObjectURL(blob);
       await window.db.addPhoto({
-        photoId: photoId, visitClientId: draftId, stateKey: '__extra__',
+        photoId: photoId, visitClientId: draftId, stateKey: '__extra__', variantKey: '',
         fileName: fileName, kvNumber: kv, blob: blob,
         status: 'pending', attempts: 0, lastError: '', remote: null, localUrl: localUrl
       });
@@ -1446,11 +1543,10 @@ async function onDivisionNext() {
   let firstErrorKey = null;
   div.objects.forEach(obj => {
     const stateKey = div.key + '.' + obj.key;
-    const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
+    const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
     const hasSelection = rs.selected.length > 0;
     const hasCustom = String(rs.custom || '').trim().length > 0;
     const hasNoIssues = rs.noIssues === true;
-    const hasPhotos = (rs.photos || []).length > 0;
 
     if (!hasSelection && !hasCustom && !hasNoIssues) {
       rs.error = 'Отметьте замечание, «Замечаний нет» или впишите своё';
@@ -1459,8 +1555,21 @@ async function onDivisionNext() {
       if (!firstErrorKey) firstErrorKey = stateKey;
       return;
     }
-    const hasActualIssues = hasSelection || hasCustom;
-    if (hasActualIssues && !hasPhotos) {
+
+    // Фото: либо общие, либо по каждому выбранному замечанию
+    const hasCommonPhotos = (rs.commonPhotos || []).length > 0;
+    let allSelectedHavePhotos = true;
+    let anySelected = rs.selected.length > 0;
+    rs.selected.forEach(variant => {
+      const arr = (rs.photosByVariant && rs.photosByVariant[variant]) || [];
+      if (arr.length === 0) allSelectedHavePhotos = false;
+    });
+
+    // Считаем, что фото есть, если: есть общие, ИЛИ у всех замечаний есть фото
+    // (можно сделать мягче: достаточно любого фото)
+    const hasAnyPhoto = hasCommonPhotos || Object.keys(rs.photosByVariant || {}).some(v => (rs.photosByVariant[v] || []).length > 0);
+
+    if ((hasSelection || hasCustom) && !hasAnyPhoto) {
       rs.error = 'Приложите хотя бы одно фото';
       state.form.results[stateKey] = rs;
       hasError = true;
@@ -1515,8 +1624,14 @@ async function submitVisit() {
         custom: rs.custom || '',
         noIssues: rs.noIssues || false,
         volumes: rs.volumes || {},
-        photos: (rs.photos || []).map(p => ({ photoId: p.photoId, name: p.name }))
+        commonPhotos: (rs.commonPhotos || []).map(p => ({ photoId: p.photoId, name: p.name })),
+        photosByVariant: {}
       };
+      Object.keys(rs.photosByVariant || {}).forEach(variant => {
+        cleanResults[key].photosByVariant[variant] = (rs.photosByVariant[variant] || []).map(p => ({
+          photoId: p.photoId, name: p.name
+        }));
+      });
     });
     const payload = {
       email: state.user.name || 'осмотрщик',
