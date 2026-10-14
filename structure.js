@@ -1,7 +1,7 @@
 // ================= Локальная сборка формы =================
 //
-// Полностью повторяет getFormStructure с бэкенда, но собирает разделы
-// локально из кэша справочника и правил замечаний. Нужна для офлайна.
+// При офлайне строит структуру формы локально. Замечания берёт из кэша,
+// фильтрует по showInApp (только те, что показывать в приложении).
 
 function parseIntSafe(v) {
   if (v === null || v === undefined) return 0;
@@ -119,9 +119,7 @@ function buildFormStructure(apartment) {
 
   divisions.push({
     key: 'vodosnabzhenie', title: 'Водоснабжение',
-    objects: [
-      { key: 'vodosnabzhenie', label: 'Водоснабжение', criterion: 'Водоснабжение' }
-    ]
+    objects: [{ key: 'vodosnabzhenie', label: 'Водоснабжение', criterion: 'Водоснабжение' }]
   });
 
   if (isYes(wardrobe)) {
@@ -157,29 +155,35 @@ function buildFormStructure(apartment) {
     ]
   });
 
-  divisions.push({
-    key: 'dopolnitelno', title: 'Дополнительная информация', objects: []
-  });
+  divisions.push({ key: 'dopolnitelno', title: 'Дополнительная информация', objects: [] });
 
   return { divisions: divisions };
 }
 
-// Собираем форму: структура + варианты замечаний из кэша
-function buildFormData(apartment, remarksRules) {
+function buildFormData(apartment, remarksRulesFull) {
   const structure = buildFormStructure(apartment);
-  const rules = remarksRules || {};
+  const rules = remarksRulesFull || {};
 
   structure.divisions.forEach(div => {
     div.objects.forEach(obj => {
       const answersForType = rules[obj.criterion] || {};
-      if (Array.isArray(answersForType)) {
-        obj.variants = answersForType;
-      } else {
-        obj.variants = Object.keys(answersForType).map(variant => ({
+      const variants = [];
+      Object.keys(answersForType).forEach(variant => {
+        const info = answersForType[variant];
+        // Если старый формат (строка) — считаем showInApp = true
+        if (typeof info === 'string') {
+          variants.push({ variant: variant, text: info, requireVolume: false, unit: '' });
+          return;
+        }
+        if (!info || info.showInApp === false) return;
+        variants.push({
           variant: variant,
-          text: answersForType[variant]
-        }));
-      }
+          text: info.text || '',
+          requireVolume: !!info.requireVolume,
+          unit: info.unit || ''
+        });
+      });
+      obj.variants = variants;
     });
   });
 
