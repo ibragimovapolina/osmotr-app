@@ -602,3 +602,108 @@ p {
   border-color: #ea4335;
   color: #c5221f;
 }
+/* ============ ЧИП + ПЛАШКА ОБЪЁМА ============ */
+.chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+  margin-bottom: 4px;
+  position: relative;
+  flex-wrap: wrap;
+}
+
+.volume-badge {
+  display: inline-block;
+  background: #e6f4ea;
+  color: #137333;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.volume-badge:active {
+  opacity: 0.7;
+}
+
+/* ============ МОДАЛЬНОЕ ОКНО ============ */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.modal-window {
+  background: #fff;
+  border-radius: 14px;
+  padding: 22px;
+  width: 100%;
+  max-width: 360px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+}
+
+.modal-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  color: #202124;
+}
+
+.modal-subtitle {
+  font-size: 15px;
+  color: #5f6368;
+  margin-bottom: 18px;
+  word-wrap: break-word;
+}
+
+.modal-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.modal-input {
+  flex: 1;
+  min-height: 52px;
+  padding: 14px 16px;
+  border: 2px solid #e8eaed;
+  border-radius: 10px;
+  font-size: 18px;
+  font-family: inherit;
+  background: #fff;
+  -webkit-appearance: none;
+}
+
+.modal-input:focus {
+  outline: none;
+  border-color: #1a73e8;
+}
+
+.modal-unit {
+  font-size: 15px;
+  color: #5f6368;
+  font-weight: 500;
+  min-width: 40px;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.modal-actions .btn {
+  flex: 1;
+  min-height: 52px;
+  padding: 14px 16px;
+  font-size: 16px;
+}
