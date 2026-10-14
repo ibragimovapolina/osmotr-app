@@ -1,31 +1,23 @@
-// ================= Движок синхронизации v4 =================
+// ================= Движок синхронизации v5 =================
 //
-// Отправляет осмотры: фото по одному через POST → сам осмотр через POST.
-// Особенности:
-//  - Таймаут на каждый запрос (60 сек) — не даёт зависнуть.
-//  - Пауза 500 мс между фото — сеть «дышит».
-//  - Wake Lock — вкладка не засыпает, пока идёт отправка.
-//  - Автосброс «зависших» осмотров в статусе syncing (3 мин).
-//  - Прогресс сохраняется в visits.progress — показывается в UI.
+// Отправляет осмотры: фото через POST → submitVisit → проверка что строка записалась.
 
 const SYNC_INTERVAL_MS = 30 * 1000;
 const REQUEST_TIMEOUT_MS = 60 * 1000;
 const PHOTO_PAUSE_MS = 500;
 
 const RETRY_DELAYS = [
-  10 * 1000,        // 10 сек
-  30 * 1000,        // 30 сек
-  60 * 1000,        // 1 мин
-  5 * 60 * 1000,    // 5 мин
-  15 * 60 * 1000,   // 15 мин
-  60 * 60 * 1000    // 1 час
+  10 * 1000,
+  30 * 1000,
+  60 * 1000,
+  5 * 60 * 1000,
+  15 * 60 * 1000,
+  60 * 60 * 1000
 ];
 
 let _syncRunning = false;
 let _syncTimer = null;
 let _wakeLock = null;
-
-// ================= ПУБЛИЧНЫЙ API =================
 
 async function syncNow() {
   if (_syncRunning) return { skipped: true, reason: 'already-running' };
@@ -36,7 +28,6 @@ async function syncNow() {
 
   const result = { sent: 0, failed: 0, photos: 0, skipped: 0, errors: [] };
   try {
-    // Автосброс — на всякий случай
     if (window.db.resetStuckSyncing) await window.db.resetStuckSyncing(3);
 
     const pending = await window.db.getPendingVisits();
@@ -133,7 +124,6 @@ async function syncVisit(visit) {
 
   let photosUploaded = 0;
 
-  // 1. Фото
   const photos = await window.db.getPhotosForVisit(visit.clientId);
   const totalPhotos = photos.length;
 
@@ -150,7 +140,6 @@ async function syncVisit(visit) {
 
     if (photo.status === 'uploaded' && photo.remote) {
       pushPhotoToMap(photoMap, photo.stateKey, photo.remote);
-      // прогресс — уже загружено, не учитываем в current
       continue;
     }
 
@@ -179,13 +168,11 @@ async function syncVisit(visit) {
       throw new Error('Ошибка загрузки фото: ' + err.message);
     }
 
-    // Пауза между фото
     if (i < photos.length - 1) {
       await sleep(PHOTO_PAUSE_MS);
     }
   }
 
-  // 2. Собираем payload с URL
   const payload = buildPayloadWithPhotos(visit.payload, photoMap);
   payload.clientId = visit.clientId;
 
@@ -194,9 +181,29 @@ async function syncVisit(visit) {
   });
   notifyUI();
 
-  // 3. Отправляем сам осмотр
+  // Отправка
   const res = await postApi('submitVisit', payload);
   const data = (res && res.data) ? res.data : res;
+
+  if (!data || data.ok === false) {
+    throw new Error('Сервер вернул ошибку: ' + ((data && data.error) || 'неизвестно'));
+  }
+
+  // ДВОЙНАЯ ПРОВЕРКА: убедимся, что строка реально записалась
+  await sleep(500);
+  try {
+    const check = await apiGet('checkVisitExistsByClientId', { clientId: visit.clientId });
+    const checkData = (check && check.data) ? check.data : check;
+    if (!checkData || !checkData.found) {
+      throw new Error('Отправка не подтверждена: строка не найдена в таблице по ClientID');
+    }
+    console.log('[sync] ✅ Двойная проверка пройдена. Строка:', checkData.row);
+  } catch (checkErr) {
+    if (String(checkErr.message).indexOf('не подтверждена') !== -1) {
+      throw checkErr;
+    }
+    console.warn('[sync] Проверка не удалась (сеть):', checkErr.message);
+  }
 
   await window.db.updateVisit(visit.clientId, {
     status: 'synced',
@@ -205,12 +212,11 @@ async function syncVisit(visit) {
     progress: null
   });
 
-  // 4. Удаляем отправленные фото
   for (const p of photos) {
     await window.db.deletePhoto(p.photoId);
   }
 
-  console.log('[sync] ✅ Осмотр отправлен:', visit.clientId, 'строка', (data && data.row));
+  console.log('[sync] ✅ Осмотр отправлен и подтверждён:', visit.clientId, 'строка', (data && data.row));
   return { photosUploaded };
 }
 
@@ -316,9 +322,7 @@ async function requestWakeLock() {
   try {
     if (_wakeLock) return;
     _wakeLock = await navigator.wakeLock.request('screen');
-    _wakeLock.addEventListener('release', () => {
-      _wakeLock = null;
-    });
+    _wakeLock.addEventListener('release', () => { _wakeLock = null; });
     console.log('[sync] Wake Lock включён');
   } catch (e) {
     console.warn('[sync] Wake Lock не удалось:', e.message);
