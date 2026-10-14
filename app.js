@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.0.3';
+const APP_VERSION = '1.0.4';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -27,7 +27,9 @@ const state = {
   visitsList: [],
   expandedVisitId: null,
   kvWarning: null,
-  settingsMessage: null
+  settingsMessage: null,
+  // Для модального окна объёма
+  volumeModal: null // { stateKey, variant, unit, value }
 };
 
 // ================= СТАРТ =================
@@ -36,14 +38,12 @@ document.addEventListener('DOMContentLoaded', init);
 async function init() {
   const savedName = await window.db.getUserName();
   state.user.name = savedName || '';
-
   if (!state.user.name) {
     state.nameMode = 'first';
     state.screen = 'name';
     render();
     return;
   }
-
   await continueStartup();
 }
 
@@ -51,7 +51,6 @@ async function continueStartup() {
   if (window.db && window.db.resetStuckSyncing) {
     window.db.resetStuckSyncing(3).catch(() => {});
   }
-
   const draft = await checkDraftOnStart();
   state.pendingDraft = draft;
   state.screen = 'home';
@@ -61,7 +60,6 @@ async function continueStartup() {
   if (window.db && window.db.silentUpdateReference) {
     window.db.silentUpdateReference().catch(() => {});
   }
-
   if (window.sync && window.sync.startAutoSync) {
     window.sync.startAutoSync();
   }
@@ -83,24 +81,19 @@ async function refreshQueueStats() {
   if (!window.db || !window.db.getQueueStats) return;
   try {
     state.queueStats = await window.db.getQueueStats();
-  } catch (e) { /* ignore */ }
+  } catch (e) {}
 }
 
 // ================= API =================
 async function apiGet(action, payload, timeoutMs) {
-  // Если офлайн — сразу ошибка, не ждём
-  if (!navigator.onLine) {
-    throw new Error('Нет сети');
-  }
-
+  if (!navigator.onLine) throw new Error('Нет сети');
   const params = new URLSearchParams();
   params.set('action', action);
   params.set('payload', JSON.stringify(payload || {}));
   const url = API_URL + '?' + params.toString();
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs || 10000);
-
+  const timer = setTimeout(() => controller.abort(), timeoutMs || 15000);
   try {
     const response = await fetch(url, {
       method: 'GET',
@@ -114,18 +107,17 @@ async function apiGet(action, payload, timeoutMs) {
     clearTimeout(timer);
   }
 }
+
 function parseResponse(text) {
   let t = String(text || '').trim();
   const match = t.match(/^[a-zA-Z0-9_$]+\((.*)\);?\s*$/s);
   if (match) t = match[1];
-
   let result;
   try {
     result = JSON.parse(t);
   } catch (err) {
     throw new Error('Ответ не JSON: ' + t.substring(0, 100));
   }
-
   if (result && result.ok === false) {
     throw new Error(result.error || 'Неизвестная ошибка');
   }
@@ -154,11 +146,90 @@ function render() {
   if (state.screen === 'settings')    return renderSettings(app);
 }
 
+// ================= МОДАЛЬНОЕ ОКНО ОБЪЁМА =================
+function openVolumeModal(stateKey, variant, unit, currentValue) {
+  state.volumeModal = {
+    stateKey: stateKey,
+    variant: variant,
+    unit: unit || '',
+    value: currentValue !== undefined && currentValue !== null ? String(currentValue) : ''
+  };
+  renderVolumeModal();
+}
+
+function closeVolumeModal() {
+  state.volumeModal = null;
+  const el = document.getElementById('volumeModalBackdrop');
+  if (el) el.remove();
+}
+
+function renderVolumeModal() {
+  const existing = document.getElementById('volumeModalBackdrop');
+  if (existing) existing.remove();
+  const m = state.volumeModal;
+  if (!m) return;
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'volumeModalBackdrop';
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="modal-window" onclick="event.stopPropagation()">
+      <h3 class="modal-title">Объём</h3>
+      <p class="modal-subtitle">${escapeHtml(m.variant)}</p>
+      <div class="modal-input-row">
+        <input id="volumeInput" class="modal-input" type="text" inputmode="decimal"
+               value="${escapeAttr(m.value)}" placeholder="0"
+               oninput="onVolumeInput(this.value)">
+        <span class="modal-unit">${escapeHtml(m.unit)}</span>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="cancelVolume()">Отмена</button>
+        <button class="btn btn-primary" id="volumeOkBtn" onclick="confirmVolume()" ${m.value ? '' : 'disabled'}>Готово</button>
+      </div>
+    </div>
+  `;
+  backdrop.onclick = cancelVolume;
+  document.body.appendChild(backdrop);
+
+  setTimeout(() => {
+    const inp = document.getElementById('volumeInput');
+    if (inp) { inp.focus(); inp.select(); }
+  }, 100);
+}
+
+function onVolumeInput(value) {
+  if (!state.volumeModal) return;
+  state.volumeModal.value = value;
+  const btn = document.getElementById('volumeOkBtn');
+  if (btn) btn.disabled = !String(value || '').trim();
+}
+
+function cancelVolume() {
+  state.volumeModal = null;
+  closeVolumeModal();
+}
+
+function confirmVolume() {
+  const m = state.volumeModal;
+  if (!m) return;
+  const val = String(m.value || '').trim();
+  if (!val) return;
+
+  const rs = state.form.results[m.stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
+  if (!rs.volumes) rs.volumes = {};
+  rs.volumes[m.variant] = { value: val, unit: m.unit };
+  state.form.results[m.stateKey] = rs;
+
+  state.volumeModal = null;
+  closeVolumeModal();
+  updateObjectCard(m.stateKey);
+  autoSave();
+}
+
 // ================= ЭКРАН ИМЕНИ =================
 function renderNameInput(app) {
   const isFirst = state.nameMode === 'first';
   const currentName = state.user.name || '';
-
   app.innerHTML = `
     <div class="user-greeting">
       <div class="avatar">👤</div>
@@ -195,7 +266,6 @@ async function onSaveName() {
   if (!name) { alert('Пожалуйста, введите имя.'); return; }
   await window.db.setUserName(name);
   state.user.name = name;
-
   if (state.nameMode === 'change') {
     state.nameMode = 'first';
     state.screen = 'settings';
@@ -217,7 +287,6 @@ function renderHome(app) {
   const hasDraft = !!state.pendingDraft;
   const draftInfo = hasDraft && state.pendingDraft.form
     ? `Квартира ${state.pendingDraft.form.kvNumber || '—'}` : '';
-
   const pending = state.queueStats.pendingVisits || 0;
   const online = navigator.onLine;
 
@@ -294,7 +363,6 @@ async function renderSettings(app) {
   } catch (e) {}
 
   const version = await window.db.getMeta('version');
-
   const msgHtml = state.settingsMessage
     ? `<div class="update-info ${state.settingsMessage.type === 'error' ? 'error' : (state.settingsMessage.type === 'ok' ? 'ok' : '')}">
          ${escapeHtml(state.settingsMessage.text)}
@@ -303,10 +371,7 @@ async function renderSettings(app) {
 
   app.innerHTML = `
     <div class="card">
-      <div class="step-header">
-        <h2>⚙ Настройки</h2>
-      </div>
-
+      <div class="step-header"><h2>⚙ Настройки</h2></div>
       ${msgHtml}
 
       <div class="settings-section">
@@ -362,11 +427,7 @@ async function renderSettings(app) {
       </div>
 
       <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
-
-      <div class="app-version">
-        Осмотры квартир · v${APP_VERSION}<br>
-        Работает офлайн
-      </div>
+      <div class="app-version">Осмотры квартир · v${APP_VERSION}<br>Работает офлайн</div>
     </div>
   `;
 }
@@ -384,23 +445,19 @@ async function updateReferenceNow() {
     render();
     return;
   }
-
   state.settingsMessage = { type: '', text: 'Обновление справочника…' };
   render();
   window.scrollTo(0, 0);
 
   try {
-    console.log('[settings] Обновление справочника…');
     const refRes = await apiGet('getReference');
     const refData = (refRes && refRes.data) ? refRes.data : refRes;
     await window.db.setReference(refData);
 
-    console.log('[settings] Обновление правил замечаний…');
-    const remRes = await apiGet('getRemarks');
+    const remRes = await apiGet('getRemarksFull');
     const remData = (remRes && remRes.data) ? remRes.data : remRes;
     await window.db.setRemarks(remData);
 
-    console.log('[settings] Обновление марок окон…');
     const markRes = await apiGet('getMarks');
     const markData = (markRes && markRes.data) ? markRes.data : markRes;
     await window.db.setMarks(markData);
@@ -413,9 +470,7 @@ async function updateReferenceNow() {
 
     const count = refData ? Object.keys(refData).length : 0;
     state.settingsMessage = { type: 'ok', text: '✓ Справочник обновлён: ' + count + ' квартир.' };
-    console.log('[settings] Готово. Квартир:', count);
   } catch (err) {
-    console.error('[settings] Ошибка обновления справочника:', err);
     state.settingsMessage = { type: 'error', text: 'Ошибка: ' + err.message };
   }
   await refreshQueueStats();
@@ -424,25 +479,17 @@ async function updateReferenceNow() {
 
 async function updateAppNow() {
   if (!confirm('Обновить приложение? Страница перезагрузится, данные осмотров сохранятся.')) return;
-
   try {
     state.settingsMessage = { type: '', text: 'Обновление приложения…' };
     render();
-
     if ('serviceWorker' in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
-      for (const r of regs) {
-        try { await r.unregister(); } catch (e) {}
-      }
+      for (const r of regs) { try { await r.unregister(); } catch (e) {} }
     }
-
     if ('caches' in window) {
       const keys = await caches.keys();
-      for (const k of keys) {
-        try { await caches.delete(k); } catch (e) {}
-      }
+      for (const k of keys) { try { await caches.delete(k); } catch (e) {} }
     }
-
     setTimeout(() => { location.reload(); }, 500);
   } catch (err) {
     state.settingsMessage = { type: 'error', text: 'Ошибка обновления: ' + err.message };
@@ -459,7 +506,7 @@ async function exportVisitsCsvFromSettings() {
   }
 }
 
-// ================= ЭКРАН «МОИ ОСМОТРЫ» =================
+// ================= МОИ ОСМОТРЫ =================
 async function showVisits() {
   if (!window.db || !window.db.getVisibleVisits) return;
   state.visitsList = await window.db.getVisibleVisits();
@@ -490,41 +537,31 @@ async function hideVisitFromList(clientId) {
 
 function renderVisits(app) {
   const all = state.visitsList || [];
-
   let filtered = all;
   if (state.visitsFilter === 'synced') filtered = all.filter(v => v.status === 'synced');
   else if (state.visitsFilter === 'pending') filtered = all.filter(v => v.status !== 'synced');
-
   filtered = filtered.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const limited = filtered.slice(0, 200);
-
   const filterBtn = (key, label) => `
     <button class="filter-btn ${state.visitsFilter === key ? 'active' : ''}"
             onclick="setVisitsFilter('${key}')">${label}</button>
   `;
-
   const itemsHtml = limited.length
     ? limited.map(v => renderVisitCard(v)).join('')
     : '<div class="hint">Здесь пока ничего нет.</div>';
-
   app.innerHTML = `
     <div class="card">
       <div class="step-header">
         <h2>Мои осмотры</h2>
         <p>Всего: ${all.length}. Показано: ${limited.length}.</p>
       </div>
-
       <div class="visits-filter">
         ${filterBtn('all', 'Все')}
         ${filterBtn('synced', 'Отправленные')}
         ${filterBtn('pending', 'В очереди')}
       </div>
-
       ${itemsHtml}
-
-      ${all.length > 0 ? `
-        <button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="exportVisitsCsv()">📥 Скачать CSV</button>
-      ` : ''}
+      ${all.length > 0 ? `<button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="exportVisitsCsv()">📥 Скачать CSV</button>` : ''}
       <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
     </div>
   `;
@@ -535,15 +572,12 @@ function renderVisitCard(v) {
   const userName = (v.payload && v.payload.email) || '—';
   const created = v.createdAt ? new Date(v.createdAt) : null;
   const createdStr = created ? created.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-
   let statusClass = 'pending';
   let statusText = '⏳ В очереди';
   if (v.status === 'synced') { statusClass = 'synced'; statusText = '✅ Отправлен'; }
   else if (v.status === 'error') { statusClass = 'error'; statusText = '❌ Ошибка'; }
   else if (v.status === 'syncing') { statusClass = 'pending'; statusText = '📤 Отправляется'; }
-
   const isExpanded = state.expandedVisitId === v.clientId;
-
   let detailsHtml = '';
   if (isExpanded) {
     const visitedAt = v.payload && v.payload.visitedAt ? new Date(v.payload.visitedAt) : null;
@@ -554,7 +588,6 @@ function renderVisitCard(v) {
       : 0;
     const extraCount = (v.payload && v.payload.extraPhotos) ? v.payload.extraPhotos.length : 0;
     const totalPhotos = photosCount + extraCount;
-
     detailsHtml = `
       <div class="visit-card-details">
         <p><strong>Осмотрщик:</strong> ${escapeHtml(userName)}</p>
@@ -568,7 +601,6 @@ function renderVisitCard(v) {
       </div>
     `;
   }
-
   return `
     <div class="visit-card" onclick="toggleVisitDetails('${escapeAttr(v.clientId)}')">
       <div class="visit-card-title">
@@ -587,10 +619,8 @@ function exportVisitsCsv() {
 
 function exportVisitsCsvData(rows) {
   if (!rows.length) { alert('Нет данных для экспорта.'); return; }
-
   const header = ['Квартира', 'Осмотрщик', 'Дата создания', 'Дата осмотра', 'Статус', 'Комментарии'];
   const lines = [header.map(csvEscape).join(';')];
-
   rows.forEach(v => {
     const kv = v.payload && v.payload.kvNumber ? v.payload.kvNumber : '';
     const userName = (v.payload && v.payload.email) || '';
@@ -600,23 +630,17 @@ function exportVisitsCsvData(rows) {
     if (v.status === 'synced') status = 'отправлен';
     else if (v.status === 'error') status = 'ошибка';
     const comments = (v.payload && v.payload.comments) || '';
-
     lines.push([kv, userName, created, visited, status, comments].map(csvEscape).join(';'));
   });
-
   const csv = '\uFEFF' + lines.join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
-
   const a = document.createElement('a');
   a.href = url;
   a.download = 'osmotry_' + new Date().toISOString().substring(0, 10) + '.csv';
   document.body.appendChild(a);
   a.click();
-  setTimeout(() => {
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, 500);
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
 }
 
 function csvEscape(str) {
@@ -631,13 +655,11 @@ function csvEscape(str) {
 function renderQueue(app) {
   const visits = state.queueList || [];
   const pending = visits.filter(v => v.status !== 'synced');
-
   const itemsHtml = pending.length
     ? pending.map(v => {
         const kv = v.payload && v.payload.kvNumber ? v.payload.kvNumber : '—';
         const when = v.createdAt ? new Date(v.createdAt).toLocaleString('ru-RU') : '';
         const attempts = v.attempts || 0;
-
         let statusText = '';
         if (v.status === 'pending') statusText = '⏳ Ожидает отправки';
         else if (v.status === 'syncing') {
@@ -655,7 +677,6 @@ function renderQueue(app) {
         } else {
           statusText = v.status;
         }
-
         return `
           <div class="object-card">
             <div class="object-title">Квартира ${escapeHtml(kv)}</div>
@@ -666,7 +687,6 @@ function renderQueue(app) {
         `;
       }).join('')
     : '<div class="hint">Очередь пуста.</div>';
-
   app.innerHTML = `
     <div class="card">
       <div class="step-header">
@@ -674,9 +694,7 @@ function renderQueue(app) {
         <p>Всего в очереди: ${pending.length}</p>
       </div>
       ${itemsHtml}
-      ${pending.length ? `
-        <button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="resetAttemptsNow()">🔄 Сбросить попытки</button>
-      ` : ''}
+      ${pending.length ? `<button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="resetAttemptsNow()">🔄 Сбросить попытки</button>` : ''}
       ${pending.length && navigator.onLine ? `<button class="btn btn-primary btn-large" style="margin-top:8px;" onclick="syncAllNow()">📤 Отправить всё сейчас</button>` : ''}
       <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
     </div>
@@ -694,17 +712,11 @@ async function resetAttemptsNow() {
 
 async function deleteQueuedVisit(clientId) {
   if (!confirm('Удалить осмотр из очереди? Данные и фото не будут отправлены.')) return;
-
   try {
     const photos = await window.db.getPhotosForVisit(clientId);
-    for (const p of photos) {
-      await window.db.deletePhoto(p.photoId);
-    }
-  } catch (e) { console.warn('Не удалось удалить фото:', e); }
-
-  if (window.db && window.db.deleteVisit) {
-    await window.db.deleteVisit(clientId);
-  }
+    for (const p of photos) { await window.db.deletePhoto(p.photoId); }
+  } catch (e) {}
+  if (window.db && window.db.deleteVisit) await window.db.deleteVisit(clientId);
   await refreshQueueStats();
   state.queueList = await window.db.getAllVisits();
   render();
@@ -716,17 +728,14 @@ async function showDiagnostics() {
     const db = await window.db._openDB();
     const stores = Array.from(db.objectStoreNames);
     const stats = await window.db.getQueueStats();
-
     let ref = null, remarks = null, marks = null, version = null;
     try { ref = await window.db.getReference(); } catch(e) {}
     try { remarks = await window.db.getRemarks(); } catch(e) {}
     try { marks = await window.db.getMarks(); } catch(e) {}
     try { version = await window.db.getMeta('version'); } catch(e) {}
-
     const refCount = ref ? Object.keys(ref).length : 0;
     const remCount = remarks ? Object.keys(remarks).length : 0;
     const marksCount = marks ? Object.keys(marks).length : 0;
-
     alert(
       '🔍 Диагностика\n\n' +
       'Версия приложения: ' + APP_VERSION + '\n' +
@@ -778,6 +787,7 @@ function startNewVisit() {
   state.submitResult = null;
   state.pendingDraft = null;
   state.kvWarning = null;
+  state.volumeModal = null;
   state.draftId = window.db.uuid();
   state.screen = 'newVisitKv';
   if (window.db && window.db.clearDraft) window.db.clearDraft().catch(() => {});
@@ -824,11 +834,8 @@ function onKvInput(value) {
 
       if (data && data.found) {
         state.form.apartment = data.data;
-
-        // 1) Локальная проверка (мгновенно)
         let localVisits = [];
         try { localVisits = await window.db.findVisitsByKv(kv); } catch (e) {}
-
         if (localVisits.length > 0) {
           const latest = localVisits[0];
           const dt = latest.createdAt ? new Date(latest.createdAt).toLocaleString('ru-RU') : '—';
@@ -838,14 +845,10 @@ function onKvInput(value) {
         } else {
           state.kvWarning = null;
         }
-
         renderKvResultBlock();
         if (btn) btn.disabled = false;
 
-        // 2) Серверная проверка (в фоне) — только если сеть есть
-        if (navigator.onLine) {
-          checkServerVisits(kv).catch(() => {});
-        }
+        if (navigator.onLine) checkServerVisits(kv).catch(() => {});
       } else {
         state.form.apartment = null;
         state.kvWarning = null;
@@ -859,31 +862,18 @@ function onKvInput(value) {
   }, 400);
 }
 
-// Проверка через сервер — обновляет плашку, если найдены осмотры в Google Sheets
 async function checkServerVisits(kv) {
   try {
-    const res = await apiGet('checkVisitExists', { kvNumber: kv });
+    const res = await apiGet('checkVisitExists', { kvNumber: kv }, 10000);
     const data = (res && res.data) ? res.data : res;
     if (!data || !data.found) return;
-
-    // Если пользователь уже переключился на другую квартиру — не обновляем
     if (String(state.form.kvNumber || '').trim() !== String(kv).trim()) return;
-
     const latest = data.latest || {};
     let dt = '—';
-    if (latest.date) {
-      try { dt = new Date(latest.date).toLocaleString('ru-RU'); } catch (e) {}
-    }
+    if (latest.date) { try { dt = new Date(latest.date).toLocaleString('ru-RU'); } catch (e) {} }
     const userName = latest.email || '—';
     const count = data.count || 1;
-
-    state.kvWarning = {
-      type: 'synced',
-      date: dt,
-      userName: userName,
-      source: 'server',
-      count: count
-    };
+    state.kvWarning = { type: 'synced', date: dt, userName: userName, source: 'server', count: count };
     renderKvResultBlock();
   } catch (e) {
     console.warn('[checkServerVisits]', e.message);
@@ -895,7 +885,6 @@ function renderKvResultBlock() {
   if (!result) return;
   const apt = state.form.apartment;
   if (!apt) { result.innerHTML = ''; removeKvWarningBlock(); return; }
-
   result.innerHTML = `
     <div class="apartment-preview">
       <div class="apartment-preview-title">✓ Найдено в справочнике</div>
@@ -907,23 +896,17 @@ function renderKvResultBlock() {
       </div>
     </div>
   `;
-
   const warning = state.kvWarning;
   let warningEl = document.getElementById('kvWarningBlock');
-
   if (warning) {
     let prefix;
     if (warning.source === 'server') {
       const times = warning.count > 1 ? ` (${warning.count} раза)` : '';
       prefix = `<strong>⚠ Квартира уже осматривалась${times}.</strong>`;
     } else {
-      if (warning.type === 'synced') {
-        prefix = '<strong>⚠ Вы уже осматривали эту квартиру.</strong>';
-      } else {
-        prefix = '<strong>⏳ Квартира уже в очереди у вас.</strong>';
-      }
+      if (warning.type === 'synced') prefix = '<strong>⚠ Вы уже осматривали эту квартиру.</strong>';
+      else prefix = '<strong>⏳ Квартира уже в очереди у вас.</strong>';
     }
-
     const warningHtml = `
       <div class="kv-warning">
         ${prefix}<br>
@@ -932,10 +915,8 @@ function renderKvResultBlock() {
         Вы можете осмотреть её ещё раз — ничего не блокируется.
       </div>
     `;
-
-    if (warningEl) {
-      warningEl.innerHTML = warningHtml;
-    } else {
+    if (warningEl) warningEl.innerHTML = warningHtml;
+    else {
       const div = document.createElement('div');
       div.id = 'kvWarningBlock';
       div.innerHTML = warningHtml;
@@ -954,23 +935,17 @@ function removeKvWarningBlock() {
 
 async function checkApartmentSmart(kv) {
   const kvKey = String(kv).trim().toLowerCase();
-
-  // 1) Если офлайн — только локальный справочник
   if (!navigator.onLine) {
     const ref = await window.db.getReference();
     if (ref && ref[kvKey]) {
       return { found: true, kv: kv, data: ref[kvKey], fromCache: true };
     }
-    // Локально нет — точно не найдём
-    return { found: false, kv: kv, fromCache: true, error: 'Офлайн, квартира не найдена в локальном справочнике' };
+    return { found: false, kv: kv, fromCache: true };
   }
-
-  // 2) Онлайн — пробуем сеть с коротким таймаутом
   try {
     const res = await apiGet('checkApartment', { kvNumber: kv }, 8000);
     return res.data || res;
   } catch (netErr) {
-    // 3) Сеть есть, но не ответила — фолбэк на кэш
     console.warn('[checkApartmentSmart] сеть не ответила, берём локальный кэш:', netErr.message);
     const ref = await window.db.getReference();
     if (ref && ref[kvKey]) {
@@ -979,6 +954,7 @@ async function checkApartmentSmart(kv) {
     throw netErr;
   }
 }
+
 function onKvNext() {
   if (!state.form.apartment) return;
   state.screen = 'newVisitRef';
@@ -991,12 +967,10 @@ function renderNewVisitRef(app) {
   const apt = state.form.apartment || {};
   const edited = state.form.editedFields || {};
   const val = (field, fallback) => edited[field] !== undefined ? edited[field] : (fallback || '');
-
   const roomsNumRaw = edited.roomsNum !== undefined ? edited.roomsNum : (apt.roomsNum || '');
   const roomsNum = parseInt(String(roomsNumRaw).replace(/\D/g, ''), 10) || 0;
   const showWinR2 = roomsNum >= 2;
   const showWinR3 = roomsNum >= 3;
-
   app.innerHTML = `
     <div class="card">
       <div class="step-header">
@@ -1004,42 +978,28 @@ function renderNewVisitRef(app) {
         <h2>Справочные данные</h2>
         <p>Проверьте данные из справочника. Если что-то не так — исправьте.</p>
       </div>
-
       <div class="field-group"><label class="field-label">Площадь, кв.м</label>
         <input class="field-input" type="text" inputmode="decimal" value="${escapeHtml(val('area', apt.area))}" oninput="onRefEdit('area', this.value)"></div>
-
       <div class="field-group"><label class="field-label">Этаж</label>
         <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('floor', apt.floor))}" oninput="onRefEdit('floor', this.value)"></div>
-
       <div class="field-group"><label class="field-label">Комнатность</label>
         <input class="field-input" type="text" value="${escapeHtml(val('rooms', apt.rooms))}" oninput="onRefEdit('rooms', this.value)"></div>
-
       <div class="field-group"><label class="field-label">Комнат (число)</label>
         <input class="field-input" id="roomsNumInput" type="text" inputmode="numeric" value="${escapeHtml(val('roomsNum', apt.roomsNum))}" oninput="onRefEditRoomsNum(this.value)"></div>
-
       <div class="field-group"><label class="field-label">Санузлов</label>
         <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('bathrooms', apt.bathrooms))}" oninput="onRefEdit('bathrooms', this.value)"></div>
-
       <div class="field-group"><label class="field-label">Прачечная</label>
         <input class="field-input" type="text" value="${escapeHtml(val('laundry', apt.laundry))}" oninput="onRefEdit('laundry', this.value)"></div>
-
       <div class="field-group"><label class="field-label">Гардеробная</label>
         <input class="field-input" type="text" value="${escapeHtml(val('wardrobe', apt.wardrobe))}" oninput="onRefEdit('wardrobe', this.value)"></div>
-
       <div class="field-group"><label class="field-label">Окон в ЖК №1</label>
         <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('winR1', apt.winR1))}" oninput="onRefEdit('winR1', this.value)"></div>
-
-      ${showWinR2 ? `
-      <div class="field-group"><label class="field-label">Окон в ЖК №2</label>
+      ${showWinR2 ? `<div class="field-group"><label class="field-label">Окон в ЖК №2</label>
         <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('winR2', apt.winR2))}" oninput="onRefEdit('winR2', this.value)"></div>` : ''}
-
-      ${showWinR3 ? `
-      <div class="field-group"><label class="field-label">Окон в ЖК №3</label>
+      ${showWinR3 ? `<div class="field-group"><label class="field-label">Окон в ЖК №3</label>
         <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('winR3', apt.winR3))}" oninput="onRefEdit('winR3', this.value)"></div>` : ''}
-
       <div class="field-group"><label class="field-label">Окон на кухне</label>
         <input class="field-input" type="text" inputmode="numeric" value="${escapeHtml(val('winK', apt.winK))}" oninput="onRefEdit('winK', this.value)"></div>
-
       <button class="btn btn-primary btn-large" onclick="onRefNext()">Далее →</button>
       <button class="btn btn-secondary" onclick="backToKv()">← Назад</button>
     </div>
@@ -1066,7 +1026,6 @@ async function onRefNext() {
   const apt = state.form.apartment || {};
   const edited = state.form.editedFields || {};
   state.form.apartment = Object.assign({}, apt, edited);
-
   try {
     const data = await getFormDataSmart(state.form.apartment);
     state.form.divisions = data.divisions || [];
@@ -1102,17 +1061,12 @@ function renderDivision(app) {
   const divs = state.form.divisions || [];
   const idx = state.form.currentDivisionIndex;
   const div = divs[idx];
-
   if (!div) { app.innerHTML = `<div class="error-box">Раздел не найден.</div>`; return; }
-
   const totalDivisions = divs.length;
   const progressText = `Шаг ${idx + 3} из ${totalDivisions + 2}`;
   const isLast = (idx + 1 === totalDivisions);
-
   if (div.key === 'dopolnitelno') return renderExtraInfo(app, div, progressText, isLast);
-
   const objectsHtml = div.objects.map(obj => renderObjectCard(div.key, obj)).join('');
-
   app.innerHTML = `
     <div class="card">
       <div class="step-header">
@@ -1133,12 +1087,23 @@ function renderDivision(app) {
 
 function renderObjectCard(divKey, obj) {
   const stateKey = divKey + '.' + obj.key;
-  const objState = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [] };
+  const objState = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
+  if (!objState.volumes) objState.volumes = {};
 
   const variantsHtml = (obj.variants || []).map((v) => {
     const isSelected = objState.selected.includes(v.variant);
-    return `<button type="button" class="chip ${isSelected ? 'chip-selected' : ''}"
-              onclick="toggleVariant('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}')">${escapeHtml(v.variant)}</button>`;
+    const vol = objState.volumes[v.variant];
+    const volBadge = (isSelected && vol && vol.value)
+      ? `<span class="volume-badge" onclick="event.stopPropagation(); editVolume('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}', '${escapeAttr(v.unit || '')}')">${escapeHtml(vol.value)} ${escapeHtml(vol.unit || '')}</span>`
+      : '';
+    const chipClass = 'chip ' + (isSelected ? 'chip-selected' : '');
+    return `
+      <span class="chip-wrap">
+        <button type="button" class="${chipClass}"
+                onclick="onChipClick('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}', ${v.requireVolume ? 'true' : 'false'}, '${escapeAttr(v.unit || '')}')">${escapeHtml(v.variant)}</button>
+        ${volBadge}
+      </span>
+    `;
   }).join('');
 
   const noIssuesHtml = `<button type="button"
@@ -1162,17 +1127,57 @@ function renderObjectCard(divKey, obj) {
   `;
 }
 
+// Обработка нажатия на чип
+function onChipClick(stateKey, variant, requireVolume, unit) {
+  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
+  if (!rs.volumes) rs.volumes = {};
+  rs.noIssues = false;
+
+  const i = rs.selected.indexOf(variant);
+  const wasSelected = i >= 0;
+
+  if (wasSelected) {
+    // снимаем
+    rs.selected.splice(i, 1);
+    delete rs.volumes[variant];
+    rs.error = null;
+    state.form.results[stateKey] = rs;
+    updateObjectCard(stateKey);
+    autoSave();
+    return;
+  }
+
+  // выбираем
+  rs.selected.push(variant);
+  rs.error = null;
+  state.form.results[stateKey] = rs;
+
+  if (requireVolume) {
+    // открываем модальное окно
+    updateObjectCard(stateKey); // покажем, что чип выбран
+    openVolumeModal(stateKey, variant, unit, rs.volumes[variant] ? rs.volumes[variant].value : '');
+  } else {
+    updateObjectCard(stateKey);
+    autoSave();
+  }
+}
+
+// Редактирование объёма по тапу на плашку
+function editVolume(stateKey, variant, unit) {
+  const rs = state.form.results[stateKey] || { volumes: {} };
+  const current = (rs.volumes && rs.volumes[variant]) ? rs.volumes[variant].value : '';
+  openVolumeModal(stateKey, variant, unit, current);
+}
+
 function renderPhotoBlock(stateKey, objState) {
   const photos = objState.photos || [];
   const uploading = state.form.uploading[stateKey];
-
   let photoItemsHtml = photos.map((p, i) => `
     <div class="photo-item">
       <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
       <button type="button" class="photo-remove" onclick="removePhoto('${escapeAttr(stateKey)}', ${i})">×</button>
     </div>
   `).join('');
-
   let uploadingHtml = '';
   if (uploading) {
     uploadingHtml = `
@@ -1182,7 +1187,6 @@ function renderPhotoBlock(stateKey, objState) {
       </div>
     `;
   }
-
   return `
     <div class="photo-block">
       <div class="photo-list">${photoItemsHtml}${uploadingHtml}</div>
@@ -1195,21 +1199,10 @@ function renderPhotoBlock(stateKey, objState) {
   `;
 }
 
-function toggleVariant(stateKey, variant) {
-  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [] };
-  rs.noIssues = false;
-  const i = rs.selected.indexOf(variant);
-  if (i >= 0) rs.selected.splice(i, 1); else rs.selected.push(variant);
-  rs.error = null;
-  state.form.results[stateKey] = rs;
-  updateObjectCard(stateKey);
-  autoSave();
-}
-
 function toggleNoIssues(stateKey) {
-  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [] };
+  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
   rs.noIssues = !rs.noIssues;
-  if (rs.noIssues) rs.selected = [];
+  if (rs.noIssues) { rs.selected = []; rs.volumes = {}; }
   rs.error = null;
   state.form.results[stateKey] = rs;
   updateObjectCard(stateKey);
@@ -1217,7 +1210,7 @@ function toggleNoIssues(stateKey) {
 }
 
 function onCustomInput(stateKey, value) {
-  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [] };
+  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
   rs.custom = value;
   rs.error = null;
   state.form.results[stateKey] = rs;
@@ -1229,51 +1222,30 @@ async function onPhotoSelected(event, stateKey) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
   event.target.value = '';
-
-  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [] };
+  const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
   if (!rs.photos) rs.photos = [];
   state.form.results[stateKey] = rs;
-
   state.form.uploading[stateKey] = { current: 0, total: files.length };
   updateObjectCard(stateKey);
-
   const kv = state.form.kvNumber;
   const divisionKey = stateKey.split('.')[0];
   const objectKey = stateKey.split('.')[1];
   const draftId = state.draftId || (state.draftId = window.db.uuid());
-
   for (let i = 0; i < files.length; i++) {
     state.form.uploading[stateKey] = { current: i + 1, total: files.length };
     updateObjectCard(stateKey);
-
     try {
       const file = files[i];
       const blob = await compressImageToBlob(file);
       const fileName = buildFileName(divisionKey, objectKey, i + 1 + rs.photos.length);
       const photoId = window.db.uuid();
       const localUrl = URL.createObjectURL(blob);
-
       await window.db.addPhoto({
-        photoId: photoId,
-        visitClientId: draftId,
-        stateKey: stateKey,
-        fileName: fileName,
-        kvNumber: kv,
-        blob: blob,
-        status: 'pending',
-        attempts: 0,
-        lastError: '',
-        remote: null,
-        localUrl: localUrl
+        photoId: photoId, visitClientId: draftId, stateKey: stateKey,
+        fileName: fileName, kvNumber: kv, blob: blob,
+        status: 'pending', attempts: 0, lastError: '', remote: null, localUrl: localUrl
       });
-
-      rs.photos.push({
-        photoId: photoId,
-        localUrl: localUrl,
-        name: fileName,
-        objectKey: objectKey,
-        divisionKey: divisionKey
-      });
+      rs.photos.push({ photoId: photoId, localUrl: localUrl, name: fileName, objectKey: objectKey, divisionKey: divisionKey });
       state.form.results[stateKey] = rs;
       updateObjectCard(stateKey);
       autoSave();
@@ -1282,7 +1254,6 @@ async function onPhotoSelected(event, stateKey) {
       alert('Не удалось сохранить фото: ' + (err.message || err));
     }
   }
-
   delete state.form.uploading[stateKey];
   updateObjectCard(stateKey);
 }
@@ -1321,10 +1292,7 @@ function compressImageToBlob(file) {
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, w, h);
         canvas.toBlob(
-          (blob) => {
-            if (!blob) reject(new Error('Не удалось сжать изображение'));
-            else resolve(blob);
-          },
+          (blob) => { if (!blob) reject(new Error('Не удалось сжать изображение')); else resolve(blob); },
           'image/jpeg',
           0.7
         );
@@ -1348,10 +1316,8 @@ function updateObjectCard(stateKey) {
   if (!div) return;
   const obj = div.objects.find(o => (div.key + '.' + o.key) === stateKey);
   if (!obj) return;
-
   const cardEl = document.querySelector(`[data-state-key="${cssEscape(stateKey)}"]`);
   if (!cardEl) return;
-
   const newHtml = renderObjectCard(div.key, obj);
   const temp = document.createElement('div');
   temp.innerHTML = newHtml;
@@ -1364,14 +1330,12 @@ function renderExtraInfo(app, div, progressText, isLast) {
   const comments = state.form.comments || '';
   const extraPhotos = state.form.extraPhotos || [];
   const uploading = state.form.uploading['__extra__'];
-
   let photoItemsHtml = extraPhotos.map((p, i) => `
     <div class="photo-item">
       <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
       <button type="button" class="photo-remove" onclick="removeExtraPhoto(${i})">×</button>
     </div>
   `).join('');
-
   let uploadingHtml = '';
   if (uploading) {
     uploadingHtml = `
@@ -1381,7 +1345,6 @@ function renderExtraInfo(app, div, progressText, isLast) {
       </div>
     `;
   }
-
   app.innerHTML = `
     <div class="card">
       <div class="step-header">
@@ -1399,8 +1362,7 @@ function renderExtraInfo(app, div, progressText, isLast) {
         <div class="photo-block">
           <div class="photo-list">${photoItemsHtml}${uploadingHtml}</div>
           <label class="photo-add-label">
-            <input type="file" accept="image/*" multiple style="display:none"
-                   onchange="onExtraPhotoSelected(event)">
+            <input type="file" accept="image/*" multiple style="display:none" onchange="onExtraPhotoSelected(event)">
             <span class="photo-add-btn">📷 Добавить фото</span>
           </label>
         </div>
@@ -1422,14 +1384,11 @@ async function onExtraPhotoSelected(event) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
   event.target.value = '';
-
   if (!state.form.extraPhotos) state.form.extraPhotos = [];
   state.form.uploading['__extra__'] = { current: 0, total: files.length };
   render();
-
   const kv = state.form.kvNumber;
   const draftId = state.draftId || (state.draftId = window.db.uuid());
-
   for (let i = 0; i < files.length; i++) {
     state.form.uploading['__extra__'] = { current: i + 1, total: files.length };
     render();
@@ -1439,26 +1398,12 @@ async function onExtraPhotoSelected(event) {
       const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
       const photoId = window.db.uuid();
       const localUrl = URL.createObjectURL(blob);
-
       await window.db.addPhoto({
-        photoId: photoId,
-        visitClientId: draftId,
-        stateKey: '__extra__',
-        fileName: fileName,
-        kvNumber: kv,
-        blob: blob,
-        status: 'pending',
-        attempts: 0,
-        lastError: '',
-        remote: null,
-        localUrl: localUrl
+        photoId: photoId, visitClientId: draftId, stateKey: '__extra__',
+        fileName: fileName, kvNumber: kv, blob: blob,
+        status: 'pending', attempts: 0, lastError: '', remote: null, localUrl: localUrl
       });
-
-      state.form.extraPhotos.push({
-        photoId: photoId,
-        localUrl: localUrl,
-        name: fileName
-      });
+      state.form.extraPhotos.push({ photoId: photoId, localUrl: localUrl, name: fileName });
       render();
       autoSave();
     } catch (err) {
@@ -1486,7 +1431,6 @@ function removeExtraPhoto(index) {
 async function onDivisionNext() {
   const div = state.form.divisions[state.form.currentDivisionIndex];
   if (!div) return;
-
   if (div.key === 'dopolnitelno') {
     if (state.form.currentDivisionIndex + 1 < state.form.divisions.length) {
       state.form.currentDivisionIndex++;
@@ -1498,13 +1442,11 @@ async function onDivisionNext() {
     await submitVisit();
     return;
   }
-
   let hasError = false;
   let firstErrorKey = null;
-
   div.objects.forEach(obj => {
     const stateKey = div.key + '.' + obj.key;
-    const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [] };
+    const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [], volumes: {} };
     const hasSelection = rs.selected.length > 0;
     const hasCustom = String(rs.custom || '').trim().length > 0;
     const hasNoIssues = rs.noIssues === true;
@@ -1517,7 +1459,6 @@ async function onDivisionNext() {
       if (!firstErrorKey) firstErrorKey = stateKey;
       return;
     }
-
     const hasActualIssues = hasSelection || hasCustom;
     if (hasActualIssues && !hasPhotos) {
       rs.error = 'Приложите хотя бы одно фото';
@@ -1526,7 +1467,6 @@ async function onDivisionNext() {
       if (!firstErrorKey) firstErrorKey = stateKey;
     }
   });
-
   if (hasError) {
     render();
     setTimeout(() => {
@@ -1540,7 +1480,6 @@ async function onDivisionNext() {
     }, 50);
     return;
   }
-
   if (state.form.currentDivisionIndex + 1 < state.form.divisions.length) {
     state.form.currentDivisionIndex++;
     render();
@@ -1548,7 +1487,6 @@ async function onDivisionNext() {
     autoSave();
     return;
   }
-
   await submitVisit();
 }
 
@@ -1567,10 +1505,8 @@ function onDivisionBack() {
 async function submitVisit() {
   const app = document.getElementById('app');
   app.innerHTML = '<div class="loading">Сохранение…</div>';
-
   try {
     const clientId = state.draftId || window.db.uuid();
-
     const cleanResults = {};
     Object.keys(state.form.results).forEach(key => {
       const rs = state.form.results[key];
@@ -1578,25 +1514,18 @@ async function submitVisit() {
         selected: rs.selected || [],
         custom: rs.custom || '',
         noIssues: rs.noIssues || false,
-        photos: (rs.photos || []).map(p => ({
-          photoId: p.photoId,
-          name: p.name
-        }))
+        volumes: rs.volumes || {},
+        photos: (rs.photos || []).map(p => ({ photoId: p.photoId, name: p.name }))
       };
     });
-
     const payload = {
       email: state.user.name || 'осмотрщик',
       kvNumber: state.form.kvNumber,
       results: cleanResults,
-      extraPhotos: (state.form.extraPhotos || []).map(p => ({
-        photoId: p.photoId,
-        name: p.name
-      })),
+      extraPhotos: (state.form.extraPhotos || []).map(p => ({ photoId: p.photoId, name: p.name })),
       comments: state.form.comments || '',
       visitedAt: new Date().toISOString()
     };
-
     await window.db.addVisit({
       clientId: clientId,
       createdAt: new Date().toISOString(),
@@ -1606,15 +1535,11 @@ async function submitVisit() {
       hidden: false,
       payload: payload
     });
-
     if (window.db && window.db.clearDraft) await window.db.clearDraft();
-
     await refreshQueueStats();
-
     if (navigator.onLine && window.sync && window.sync.syncNow) {
       window.sync.syncNow().catch(() => {});
     }
-
     state.screen = 'saved';
     state.submitResult = { clientId: clientId };
     state.draftId = null;
@@ -1631,15 +1556,12 @@ async function submitVisit() {
 function renderSaved(app) {
   const online = navigator.onLine;
   const pending = state.queueStats.pendingVisits || 0;
-
   app.innerHTML = `
     <div class="card" style="text-align:center;">
       <div class="done-icon">✅</div>
       <h2>Осмотр сохранён</h2>
       <p style="margin-top:12px;">
-        ${online
-          ? 'Отправляется в таблицу…'
-          : 'Отправится при появлении сети.'}
+        ${online ? 'Отправляется в таблицу…' : 'Отправится при появлении сети.'}
       </p>
       ${pending > 0 ? `<p style="margin-top:8px;color:#5f6368;font-size:14px;">Сейчас в очереди: ${pending}</p>` : ''}
       <button class="btn btn-primary btn-large" style="margin-top:24px;" onclick="startNewVisit()">🏠 Оформить ещё один осмотр</button>
@@ -1712,12 +1634,10 @@ function escapeHtml(str) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
-
 function escapeAttr(str) {
   return String(str === null || str === undefined ? '' : str)
     .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
-
 function cssEscape(str) {
   return String(str).replace(/[^a-zA-Z0-9_\-\.]/g, '\\$&');
 }
