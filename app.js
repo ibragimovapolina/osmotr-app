@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.0.5';
+const APP_VERSION = '1.0.6';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -28,13 +28,17 @@ const state = {
   expandedVisitId: null,
   kvWarning: null,
   settingsMessage: null,
-  volumeModal: null
+  volumeModal: null,
+  swUpdateAvailable: false     // 🆕 флаг: есть новая версия SW
 };
 
 // ================= СТАРТ =================
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
+  // 🆕 Регистрируем SW и следим за обновлениями
+  registerServiceWorker();
+
   const savedName = await window.db.getUserName();
   state.user.name = savedName || '';
   if (!state.user.name) {
@@ -46,6 +50,64 @@ async function init() {
   await continueStartup();
 }
 
+// ================= ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ =================
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+
+  navigator.serviceWorker.register('./sw.js').then((reg) => {
+    console.log('[SW] зарегистрирован, scope:', reg.scope);
+
+    // Если уже есть ожидающий SW (при первом заходе после обновления) — сразу показываем плашку
+    if (reg.waiting) {
+      state.swUpdateAvailable = true;
+      if (state.screen !== 'loading' && state.screen !== 'name') render();
+    }
+
+    // Следим за появлением нового SW в будущем
+    reg.addEventListener('updatefound', () => {
+      const newWorker = reg.installing;
+      if (!newWorker) return;
+      newWorker.addEventListener('statechange', () => {
+        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+          console.log('[SW] Новая версия готова к активации');
+          state.swUpdateAvailable = true;
+          if (state.screen !== 'loading' && state.screen !== 'name') render();
+        }
+      });
+    });
+
+    // Проверяем обновления каждые 30 минут, пока приложение открыто
+    setInterval(() => {
+      reg.update().catch(() => {});
+    }, 30 * 60 * 1000);
+
+    // Проверяем при возврате в приложение (важно для мобильных)
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        reg.update().catch(() => {});
+      }
+    });
+  }).catch((err) => {
+    console.warn('[SW] ошибка регистрации:', err);
+  });
+}
+
+// Кнопка «Обновить сейчас» — активируем новый SW и перезагружаем
+function applySwUpdate() {
+  if (!('serviceWorker' in navigator)) {
+    location.reload();
+    return;
+  }
+  navigator.serviceWorker.getRegistration().then((reg) => {
+    if (reg && reg.waiting) {
+      reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+    }
+    setTimeout(() => { location.reload(); }, 400);
+  }).catch(() => { location.reload(); });
+}
+
+// ================= ПРОДОЛЖЕНИЕ СТАРТА =================
 async function continueStartup() {
   if (window.db && window.db.resetStuckSyncing) {
     window.db.resetStuckSyncing(3).catch(() => {});
@@ -145,6 +207,20 @@ function render() {
   if (state.screen === 'settings')    return renderSettings(app);
 }
 
+// 🆕 Плашка обновления приложения
+function renderSwUpdateBanner() {
+  if (!state.swUpdateAvailable) return '';
+  return `
+    <div class="card" style="background:#e8f0fe;border:2px solid #1a73e8;margin-bottom:16px;">
+      <h2 style="margin-bottom:8px;">🔄 Доступно обновление</h2>
+      <p style="color:#1a73e8;font-size:14px;">
+        Вышла новая версия приложения. Нажмите кнопку — приложение обновится и перезагрузится. Все данные осмотров сохранятся.
+      </p>
+      <button class="btn btn-primary btn-large" style="margin-top:12px;" onclick="applySwUpdate()">Обновить сейчас</button>
+    </div>
+  `;
+}
+
 // ================= МОДАЛЬНОЕ ОКНО ОБЪЁМА =================
 function openVolumeModal(stateKey, variant, unit, currentValue) {
   state.volumeModal = {
@@ -172,16 +248,15 @@ function renderVolumeModal() {
   backdrop.id = 'volumeModalBackdrop';
   backdrop.className = 'modal-backdrop';
   backdrop.innerHTML = `
-    <div class="modal-window" onclick="event.stopPropagation()">
-      <h3 class="modal-title">Объём</h3>
-      <p class="modal-subtitle">${escapeHtml(m.variant)}</p>
-      <div class="modal-input-row">
-        <input id="volumeInput" class="modal-input" type="text" inputmode="decimal"
+    <div class="modal-window compact" onclick="event.stopPropagation()">
+      <div class="modal-subtitle-compact">${escapeHtml(m.variant)}</div>
+      <div class="modal-input-row-compact">
+        <input id="volumeInput" class="modal-input-compact" type="text" inputmode="decimal"
                value="${escapeAttr(m.value)}" placeholder="0"
                oninput="onVolumeInput(this.value)">
-        <span class="modal-unit">${escapeHtml(m.unit)}</span>
+        <span class="modal-unit-compact">${escapeHtml(m.unit || '—')}</span>
       </div>
-      <div class="modal-actions">
+      <div class="modal-actions-compact">
         <button class="btn btn-secondary" onclick="cancelVolume()">Отмена</button>
         <button class="btn btn-primary" id="volumeOkBtn" onclick="confirmVolume()" ${m.value ? '' : 'disabled'}>Готово</button>
       </div>
@@ -290,6 +365,8 @@ function renderHome(app) {
   const online = navigator.onLine;
 
   app.innerHTML = `
+    ${renderSwUpdateBanner()}
+
     <div class="user-greeting">
       <div class="avatar">${escapeHtml((state.user.name || '?').charAt(0).toUpperCase())}</div>
       <div class="email">👤 ${escapeHtml(state.user.name || '—')}</div>
@@ -369,6 +446,8 @@ async function renderSettings(app) {
     : '';
 
   app.innerHTML = `
+    ${renderSwUpdateBanner()}
+
     <div class="card">
       <div class="step-header"><h2>⚙ Настройки</h2></div>
       ${msgHtml}
@@ -407,9 +486,9 @@ async function renderSettings(app) {
       <div class="settings-section">
         <h3>Обновление приложения</h3>
         <p style="font-size:14px;color:#5f6368;margin-bottom:12px;">
-          Если вышли новые функции или исправления — нажмите кнопку. Приложение подтянет свежую версию.
+          Проверьте, нет ли новой версии. Если есть — установите.
         </p>
-        <button class="btn btn-primary" onclick="updateAppNow()">🔄 Обновить приложение</button>
+        <button class="btn btn-primary" onclick="checkAndUpdateApp()">🔄 Проверить обновление</button>
       </div>
 
       <div class="settings-section">
@@ -436,6 +515,41 @@ async function openNameChange() {
   state.screen = 'name';
   render();
   window.scrollTo(0, 0);
+}
+
+// 🆕 Проверка обновления вручную
+async function checkAndUpdateApp() {
+  if (!('serviceWorker' in navigator)) {
+    alert('Ваш браузер не поддерживает Service Worker. Откройте приложение заново.');
+    return;
+  }
+  try {
+    state.settingsMessage = { type: '', text: 'Проверка обновлений…' };
+    render();
+
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) {
+      state.settingsMessage = { type: 'error', text: 'Service Worker не зарегистрирован. Обновите страницу.' };
+      render();
+      return;
+    }
+
+    await reg.update();
+    // Ждём немного, чтобы установка успела завершиться
+    await new Promise(r => setTimeout(r, 1500));
+
+    if (reg.waiting) {
+      state.swUpdateAvailable = true;
+      state.settingsMessage = { type: 'ok', text: '✓ Доступно обновление. Нажмите «Обновить сейчас».' };
+      render();
+    } else {
+      state.settingsMessage = { type: 'ok', text: '✓ У вас последняя версия (' + APP_VERSION + ').' };
+      render();
+    }
+  } catch (err) {
+    state.settingsMessage = { type: 'error', text: 'Ошибка: ' + err.message };
+    render();
+  }
 }
 
 async function updateReferenceNow() {
@@ -474,26 +588,6 @@ async function updateReferenceNow() {
   }
   await refreshQueueStats();
   render();
-}
-
-async function updateAppNow() {
-  if (!confirm('Обновить приложение? Страница перезагрузится, данные осмотров сохранятся.')) return;
-  try {
-    state.settingsMessage = { type: '', text: 'Обновление приложения…' };
-    render();
-    if ('serviceWorker' in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      for (const r of regs) { try { await r.unregister(); } catch (e) {} }
-    }
-    if ('caches' in window) {
-      const keys = await caches.keys();
-      for (const k of keys) { try { await caches.delete(k); } catch (e) {} }
-    }
-    setTimeout(() => { location.reload(); }, 500);
-  } catch (err) {
-    state.settingsMessage = { type: 'error', text: 'Ошибка обновления: ' + err.message };
-    render();
-  }
 }
 
 async function exportVisitsCsvFromSettings() {
@@ -583,7 +677,18 @@ function renderVisitCard(v) {
     const visitedStr = visitedAt ? visitedAt.toLocaleString('ru-RU') : '—';
     const comments = (v.payload && v.payload.comments) || '';
     const photosCount = v.payload && v.payload.results
-      ? Object.keys(v.payload.results).reduce((sum, k) => sum + ((v.payload.results[k].photos || []).length), 0)
+      ? Object.keys(v.payload.results).reduce((sum, k) => {
+          const rs = v.payload.results[k] || {};
+          let n = 0;
+          if (Array.isArray(rs.commonPhotos)) n += rs.commonPhotos.length;
+          if (Array.isArray(rs.photos)) n += rs.photos.length;
+          if (rs.photosByVariant) {
+            Object.keys(rs.photosByVariant).forEach(v => {
+              n += (rs.photosByVariant[v] || []).length;
+            });
+          }
+          return sum + n;
+        }, 0)
       : 0;
     const extraCount = (v.payload && v.payload.extraPhotos) ? v.payload.extraPhotos.length : 0;
     const totalPhotos = photosCount + extraCount;
@@ -618,28 +723,182 @@ function exportVisitsCsv() {
 
 function exportVisitsCsvData(rows) {
   if (!rows.length) { alert('Нет данных для экспорта.'); return; }
-  const header = ['Квартира', 'Осмотрщик', 'Дата создания', 'Дата осмотра', 'Статус', 'Комментарии'];
-  const lines = [header.map(csvEscape).join(';')];
+
+  const allLines = [];
+
   rows.forEach(v => {
-    const kv = v.payload && v.payload.kvNumber ? v.payload.kvNumber : '';
-    const userName = (v.payload && v.payload.email) || '';
-    const created = v.createdAt ? new Date(v.createdAt).toLocaleString('ru-RU') : '';
-    const visited = v.payload && v.payload.visitedAt ? new Date(v.payload.visitedAt).toLocaleString('ru-RU') : '';
+    const kv = v.payload && v.payload.kvNumber ? v.payload.kvNumber : '—';
+    const userName = (v.payload && v.payload.email) || '—';
+    const created = v.createdAt ? new Date(v.createdAt).toLocaleString('ru-RU') : '—';
+    const visitedAt = v.payload && v.payload.visitedAt ? new Date(v.payload.visitedAt).toLocaleString('ru-RU') : '—';
+
     let status = 'в очереди';
     if (v.status === 'synced') status = 'отправлен';
     else if (v.status === 'error') status = 'ошибка';
+    else if (v.status === 'syncing') status = 'отправляется';
+
+    allLines.push('');
+    allLines.push('=== ОСМОТР ===');
+    allLines.push('Квартира;' + csvEscape(kv));
+    allLines.push('Осмотрщик;' + csvEscape(userName));
+    allLines.push('Создан;' + csvEscape(created));
+    allLines.push('Осмотр;' + csvEscape(visitedAt));
+    allLines.push('Статус;' + csvEscape(status));
+
+    allLines.push('');
+    allLines.push('Объект;Замечания;Фото');
+
+    const results = (v.payload && v.payload.results) || {};
+    const stateKeys = Object.keys(results).sort();
+
+    stateKeys.forEach(stateKey => {
+      const rs = results[stateKey] || {};
+      const objName = stateKeyToRusName(stateKey);
+
+      const commonPhotos = (rs.commonPhotos || []).filter(p => p && p.url).map(p => p.url);
+      const oldPhotos = (rs.photos || []).filter(p => p && p.url).map(p => p.url);
+      const allCommon = commonPhotos.length ? commonPhotos : oldPhotos;
+
+      if (allCommon.length) {
+        allLines.push([
+          csvEscape(objName + ' (общий вид)'),
+          csvEscape('—'),
+          csvEscape(allCommon.join(' ; '))
+        ].join(';'));
+      }
+
+      const remarksParts = [];
+      const photosByVariant = rs.photosByVariant || {};
+
+      if (rs.noIssues) {
+        remarksParts.push('Замечаний нет');
+      } else {
+        (rs.selected || []).forEach(variant => {
+          const vol = (rs.volumes || {})[variant];
+          if (vol && vol.value) {
+            remarksParts.push(variant + ' (' + vol.value + (vol.unit ? ' ' + vol.unit : '') + ')');
+          } else {
+            remarksParts.push(variant);
+          }
+        });
+        if (rs.custom && String(rs.custom).trim()) {
+          remarksParts.push(rs.custom.trim());
+        }
+      }
+
+      const variantPhotoUrls = [];
+      Object.keys(photosByVariant).forEach(variant => {
+        const arr = (photosByVariant[variant] || []).filter(p => p && p.url);
+        arr.forEach(p => variantPhotoUrls.push(p.url + ' (' + variant + ')'));
+      });
+
+      if (remarksParts.length || variantPhotoUrls.length) {
+        allLines.push([
+          csvEscape(objName),
+          csvEscape(remarksParts.join('; ')),
+          csvEscape(variantPhotoUrls.join(' ; '))
+        ].join(';'));
+      }
+    });
+
+    const extraPhotos = (v.payload && v.payload.extraPhotos) || [];
+    const extraUrls = extraPhotos.filter(p => p && p.url).map(p => p.url);
+    if (extraUrls.length) {
+      allLines.push('');
+      allLines.push('Дополнительные фото;—;' + csvEscape(extraUrls.join(' ; ')));
+    }
+
     const comments = (v.payload && v.payload.comments) || '';
-    lines.push([kv, userName, created, visited, status, comments].map(csvEscape).join(';'));
+    if (comments) {
+      allLines.push('Комментарий;' + csvEscape(comments) + ';—');
+    }
   });
-  const csv = '\uFEFF' + lines.join('\r\n');
+
+  const csv = '\uFEFF' + allLines.join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
+
   const a = document.createElement('a');
   a.href = url;
   a.download = 'osmotry_' + new Date().toISOString().substring(0, 10) + '.csv';
   document.body.appendChild(a);
   a.click();
-  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 500);
+}
+
+function stateKeyToRusName(stateKey) {
+  const map = {
+    'koridor.vhodnaya_dver': 'Коридор. Входная дверь',
+    'koridor.steny': 'Коридор. Стены',
+    'koridor.poly': 'Коридор. Полы',
+    'koridor.potolki': 'Коридор. Потолки',
+    'koridor.elektro': 'Коридор. Электроснабжение',
+    'koridor.shit': 'Коридор. Щит',
+    'koridor.seti': 'Коридор. Сети связи',
+    'koridor.ops': 'Коридор. ОПС',
+    'zhk1.steny': 'ЖК1. Стены',
+    'zhk1.poly': 'ЖК1. Полы',
+    'zhk1.potolki': 'ЖК1. Потолки',
+    'zhk1.elektro': 'ЖК1. Электроснабжение',
+    'zhk1.okno1': 'ЖК1. Окно №1',
+    'zhk1.okno2': 'ЖК1. Окно №2',
+    'zhk1.radiator1': 'ЖК1. Радиатор №1',
+    'zhk1.radiator2': 'ЖК1. Радиатор №2',
+    'zhk2.steny': 'ЖК2. Стены',
+    'zhk2.poly': 'ЖК2. Полы',
+    'zhk2.potolki': 'ЖК2. Потолки',
+    'zhk2.elektro': 'ЖК2. Электроснабжение',
+    'zhk2.okno1': 'ЖК2. Окно №1',
+    'zhk2.okno2': 'ЖК2. Окно №2',
+    'zhk2.radiator1': 'ЖК2. Радиатор №1',
+    'zhk2.radiator2': 'ЖК2. Радиатор №2',
+    'zhk3.steny': 'ЖК3. Стены',
+    'zhk3.poly': 'ЖК3. Полы',
+    'zhk3.potolki': 'ЖК3. Потолки',
+    'zhk3.elektro': 'ЖК3. Электроснабжение',
+    'zhk3.okno1': 'ЖК3. Окно №1',
+    'zhk3.okno2': 'ЖК3. Окно №2',
+    'zhk3.radiator1': 'ЖК3. Радиатор №1',
+    'zhk3.radiator2': 'ЖК3. Радиатор №2',
+    'kuhnya.steny': 'Кухня. Стены',
+    'kuhnya.poly': 'Кухня. Полы',
+    'kuhnya.potolki': 'Кухня. Потолки',
+    'kuhnya.elektro': 'Кухня. Электроснабжение',
+    'kuhnya.okno1': 'Кухня. Окно №1',
+    'kuhnya.okno2': 'Кухня. Окно №2',
+    'kuhnya.radiator1': 'Кухня. Радиатор №1',
+    'kuhnya.radiator2': 'Кухня. Радиатор №2',
+    'kuhnya.kanalizaciya': 'Кухня. Канализация',
+    'kuhnya.ventilyaciya': 'Кухня. Вентиляция',
+    'su1.steny': 'Сан. узел №1. Стены',
+    'su1.poly': 'Сан. узел №1. Полы',
+    'su1.potolki': 'Сан. узел №1. Потолки',
+    'su1.elektro': 'Сан. узел №1. Электроснабжение',
+    'su1.kanalizaciya': 'Сан. узел №1. Канализация',
+    'su1.ventilyaciya': 'Сан. узел №1. Вентиляция',
+    'su2.steny': 'Сан. узел №2. Стены',
+    'su2.poly': 'Сан. узел №2. Полы',
+    'su2.potolki': 'Сан. узел №2. Потолки',
+    'su2.elektro': 'Сан. узел №2. Электроснабжение',
+    'su2.kanalizaciya': 'Сан. узел №2. Канализация',
+    'su2.ventilyaciya': 'Сан. узел №2. Вентиляция',
+    'vodosnabzhenie.vodosnabzhenie': 'Водоснабжение',
+    'garderobnaya.steny': 'Гардеробная. Стены',
+    'garderobnaya.poly': 'Гардеробная. Полы',
+    'garderobnaya.potolki': 'Гардеробная. Потолки',
+    'garderobnaya.elektro': 'Гардеробная. Электроснабжение',
+    'prachechnaya.steny': 'Прачечная. Стены',
+    'prachechnaya.poly': 'Прачечная. Полы',
+    'prachechnaya.potolki': 'Прачечная. Потолки',
+    'prachechnaya.elektro': 'Прачечная. Электроснабжение',
+    'lodzhiya.obshie': 'Лоджия. Общие замечания',
+    'lodzhiya.potolki': 'Лоджия. Потолки',
+    'lodzhiya.okno': 'Лоджия. Окно'
+  };
+  return map[stateKey] || stateKey;
 }
 
 function csvEscape(str) {
@@ -1114,7 +1373,6 @@ function renderObjectCard(divKey, obj) {
   const customHtml = `<textarea class="custom-input" rows="2" placeholder="Своё замечание (если нужно)"
     oninput="onCustomInput('${escapeAttr(stateKey)}', this.value)">${escapeHtml(objState.custom || '')}</textarea>`;
 
-  // Блок фото по каждому замечанию + Общий вид
   const photoSectionsHtml = buildPhotoSections(stateKey, objState);
 
   const error = objState.error ? `<div class="obj-error">${escapeHtml(objState.error)}</div>` : '';
@@ -1133,7 +1391,6 @@ function renderObjectCard(divKey, obj) {
 function buildPhotoSections(stateKey, objState) {
   const sections = [];
 
-  // Общий вид
   sections.push(renderPhotoSection(
     stateKey,
     '__common__',
@@ -1142,7 +1399,6 @@ function buildPhotoSections(stateKey, objState) {
     state.form.uploading[stateKey + '__common__']
   ));
 
-  // По каждому выбранному замечанию
   (objState.selected || []).forEach(variant => {
     const photos = (objState.photosByVariant && objState.photosByVariant[variant]) || [];
     sections.push(renderPhotoSection(
@@ -1188,7 +1444,6 @@ function renderPhotoSection(stateKey, variantKey, title, photos, uploading) {
   `;
 }
 
-// Обработка нажатия на чип
 function onChipClick(stateKey, variant, requireVolume, unit) {
   const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
   if (!rs.volumes) rs.volumes = {};
@@ -1199,11 +1454,9 @@ function onChipClick(stateKey, variant, requireVolume, unit) {
   const wasSelected = i >= 0;
 
   if (wasSelected) {
-    // снимаем
     rs.selected.splice(i, 1);
     delete rs.volumes[variant];
 
-    // Удаляем фото к этому замечанию (по требованию)
     const photosToDelete = rs.photosByVariant[variant] || [];
     photosToDelete.forEach(p => {
       if (p && p.photoId && window.db && window.db.deletePhoto) {
@@ -1219,7 +1472,6 @@ function onChipClick(stateKey, variant, requireVolume, unit) {
     return;
   }
 
-  // выбираем
   rs.selected.push(variant);
   rs.error = null;
   state.form.results[stateKey] = rs;
@@ -1243,7 +1495,6 @@ function toggleNoIssues(stateKey) {
   const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
   rs.noIssues = !rs.noIssues;
   if (rs.noIssues) {
-    // Удаляем все фото по замечаниям
     Object.keys(rs.photosByVariant || {}).forEach(variant => {
       (rs.photosByVariant[variant] || []).forEach(p => {
         if (p && p.photoId && window.db && window.db.deletePhoto) {
@@ -1269,7 +1520,7 @@ function onCustomInput(stateKey, value) {
   debouncedAutoSave();
 }
 
-// ================= ФОТО (по секциям) =================
+// ================= ФОТО =================
 async function onPhotoSelected2(event, stateKey, variantKey) {
   const files = Array.from(event.target.files || []);
   if (!files.length) return;
@@ -1306,7 +1557,7 @@ async function onPhotoSelected2(event, stateKey, variantKey) {
         photoId: photoId,
         visitClientId: draftId,
         stateKey: stateKey,
-        variantKey: isCommon ? '' : variantKey,   // ⚠️ ключ привязки к замечанию
+        variantKey: isCommon ? '' : variantKey,
         fileName: fileName,
         kvNumber: kv,
         blob: blob,
@@ -1556,17 +1807,7 @@ async function onDivisionNext() {
       return;
     }
 
-    // Фото: либо общие, либо по каждому выбранному замечанию
     const hasCommonPhotos = (rs.commonPhotos || []).length > 0;
-    let allSelectedHavePhotos = true;
-    let anySelected = rs.selected.length > 0;
-    rs.selected.forEach(variant => {
-      const arr = (rs.photosByVariant && rs.photosByVariant[variant]) || [];
-      if (arr.length === 0) allSelectedHavePhotos = false;
-    });
-
-    // Считаем, что фото есть, если: есть общие, ИЛИ у всех замечаний есть фото
-    // (можно сделать мягче: достаточно любого фото)
     const hasAnyPhoto = hasCommonPhotos || Object.keys(rs.photosByVariant || {}).some(v => (rs.photosByVariant[v] || []).length > 0);
 
     if ((hasSelection || hasCustom) && !hasAnyPhoto) {
