@@ -1,6 +1,6 @@
-// ================= Движок синхронизации v5 =================
+// ================= Движок синхронизации v6 =================
 //
-// Отправляет осмотры: фото через POST → submitVisit → проверка что строка записалась.
+// Отправляет осмотры: фото через POST (с раскладкой по замечаниям) → submitVisit → проверка.
 
 const SYNC_INTERVAL_MS = 30 * 1000;
 const REQUEST_TIMEOUT_MS = 60 * 1000;
@@ -132,6 +132,7 @@ async function syncVisit(visit) {
   });
   notifyUI();
 
+  // photoMap: { stateKey: { common: [remote], byVariant: { variant: [remote] } } }
   const photoMap = {};
 
   for (let i = 0; i < photos.length; i++) {
@@ -139,7 +140,7 @@ async function syncVisit(visit) {
     if (!navigator.onLine) throw new Error('Офлайн, синхронизация прервана');
 
     if (photo.status === 'uploaded' && photo.remote) {
-      pushPhotoToMap(photoMap, photo.stateKey, photo.remote);
+      pushPhotoToMap(photoMap, photo.stateKey, photo.remote, photo.variantKey);
       continue;
     }
 
@@ -150,7 +151,7 @@ async function syncVisit(visit) {
         remote: remote,
         uploadedAt: new Date().toISOString()
       });
-      pushPhotoToMap(photoMap, photo.stateKey, remote);
+      pushPhotoToMap(photoMap, photo.stateKey, remote, photo.variantKey);
       photosUploaded++;
 
       await window.db.updateVisit(visit.clientId, {
@@ -181,7 +182,6 @@ async function syncVisit(visit) {
   });
   notifyUI();
 
-  // Отправка
   const res = await postApi('submitVisit', payload);
   const data = (res && res.data) ? res.data : res;
 
@@ -189,7 +189,6 @@ async function syncVisit(visit) {
     throw new Error('Сервер вернул ошибку: ' + ((data && data.error) || 'неизвестно'));
   }
 
-  // ДВОЙНАЯ ПРОВЕРКА: убедимся, что строка реально записалась
   await sleep(500);
   try {
     const check = await apiGet('checkVisitExistsByClientId', { clientId: visit.clientId });
@@ -220,9 +219,17 @@ async function syncVisit(visit) {
   return { photosUploaded };
 }
 
-function pushPhotoToMap(map, stateKey, remote) {
-  if (!map[stateKey]) map[stateKey] = [];
-  map[stateKey].push(remote);
+function pushPhotoToMap(map, stateKey, remote, variantKey) {
+  if (!map[stateKey]) map[stateKey] = { common: [], byVariant: {} };
+  const entry = { fileId: remote.fileId, url: remote.url, name: remote.name };
+
+  if (variantKey && String(variantKey).trim()) {
+    const v = String(variantKey).trim();
+    if (!map[stateKey].byVariant[v]) map[stateKey].byVariant[v] = [];
+    map[stateKey].byVariant[v].push(entry);
+  } else {
+    map[stateKey].common.push(entry);
+  }
 }
 
 function buildPayloadWithPhotos(originalPayload, photoMap) {
@@ -230,22 +237,31 @@ function buildPayloadWithPhotos(originalPayload, photoMap) {
 
   Object.keys(photoMap).forEach(stateKey => {
     if (stateKey === '__extra__') return;
-    const rs = results[stateKey] || { selected: [], custom: '', noIssues: false, photos: [] };
-    const existing = (rs.photos || []).filter(p => p && p.url);
-    const fresh = photoMap[stateKey].map(r => ({
-      fileId: r.fileId,
-      url: r.url,
-      name: r.name
-    }));
-    rs.photos = existing.concat(fresh);
+    const rs = results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
+
+    if (!rs.commonPhotos) rs.commonPhotos = [];
+    if (!rs.photosByVariant) rs.photosByVariant = {};
+
+    const bucket = photoMap[stateKey];
+    (bucket.common || []).forEach(r => {
+      rs.commonPhotos.push({ fileId: r.fileId, url: r.url, name: r.name });
+    });
+    Object.keys(bucket.byVariant || {}).forEach(variant => {
+      if (!rs.photosByVariant[variant]) rs.photosByVariant[variant] = [];
+      bucket.byVariant[variant].forEach(r => {
+        rs.photosByVariant[variant].push({ fileId: r.fileId, url: r.url, name: r.name });
+      });
+    });
+
+    // Убираем старое поле photos, если оно было
+    delete rs.photos;
+
     results[stateKey] = rs;
   });
 
   const extraPhotos = (originalPayload.extraPhotos || []).filter(p => p && p.url)
-    .concat((photoMap['__extra__'] || []).map(r => ({
-      fileId: r.fileId,
-      url: r.url,
-      name: r.name
+    .concat(((photoMap['__extra__'] && photoMap['__extra__'].common) || []).map(r => ({
+      fileId: r.fileId, url: r.url, name: r.name
     })));
 
   return Object.assign({}, originalPayload, {
