@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.1.5';
+const APP_VERSION = '1.1.6';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -19,7 +19,7 @@ const state = {
   },
   submitResult: null,
   pendingDraft: null,
-  queueStats: { pendingVisits: 0, pendingPhotos: 0, totalVisits: 0, syncedVisits: 0 },
+  queueStats: { pendingVisits: 0, pendingPhotos: 0, totalVisits: 0, syncedVisits: 0, lastQueueBackupAt: null },
   queueList: [],
   draftId: null,
   nameMode: 'first',
@@ -29,12 +29,12 @@ const state = {
   kvWarning: null,
   settingsMessage: null,
   volumeModal: null,
-    apiReachable: null,
+  apiReachable: null,
   swUpdateAvailable: false,
-  visitPreview: null,          // { visit, photos } — открытая модалка
-  photoLightbox: null,          // { url } — увеличенное фото
-  queueBackupBusy: false,       // флаг: идёт сохранение в облако
-  queueBackupMsg: null          // { type: 'ok'|'error', text } — сообщение
+  visitPreview: null,
+  photoLightbox: null,
+  queueBackupBusy: false,
+  queueBackupMsg: null
 };
 
 // Флаг защиты от двойного клика по «удалить фото»
@@ -94,8 +94,6 @@ function registerServiceWorker() {
   });
 }
 
-// ================= ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ =================
-
 // Комбинированный механизм обновления:
 //  - Первый reload — активирует новый SW
 //  - Второй reload (через sessionStorage) — подтягивает свежие файлы через SW
@@ -107,7 +105,6 @@ function applySwUpdate() {
     return;
   }
 
-  // Если это повторный заход после обновления — просто перезагружаемся
   if (sessionStorage.getItem('__sw_updated') === '1') {
     sessionStorage.removeItem('__sw_updated');
     console.log('[SW] Второй reload после обновления');
@@ -120,7 +117,6 @@ function applySwUpdate() {
     if (reloaded) return;
     reloaded = true;
     sessionStorage.setItem('__sw_updated', '1');
-    // Небольшая пауза, чтобы новый SW точно перехватил управление
     setTimeout(hardReload, 300);
   };
 
@@ -148,14 +144,12 @@ function applySwUpdate() {
       doReload();
     }
 
-    // Страховка: если через 5 сек ничего не произошло
     setTimeout(doReload, 5000);
   }).catch(() => {
     doReload();
   });
 }
 
-// Жёсткая перезагрузка: обходит HTTP-кэш браузера через query-параметр
 function hardReload() {
   try {
     const url = new URL(location.href);
@@ -163,19 +157,19 @@ function hardReload() {
     console.log('[SW] Hard reload →', url.toString());
     location.replace(url.toString());
   } catch (e) {
-    // Фолбэк для старых браузеров
     location.reload();
   }
 }
-
 
 // ================= ПРОДОЛЖЕНИЕ СТАРТА =================
 async function continueStartup() {
   if (window.db && window.db.resetStuckSyncing) {
     window.db.resetStuckSyncing(3).catch(() => {});
   }
-    // Автосохранение очереди — с задержкой, чтобы не мешать загрузке
+
+  // Автосохранение очереди — с задержкой, чтобы не мешать загрузке
   setTimeout(() => { maybeAutoBackupQueue().catch(() => {}); }, 5000);
+
   const draft = await checkDraftOnStart();
   state.pendingDraft = draft;
   state.screen = 'home';
@@ -350,7 +344,6 @@ function onVolumeInput(value) {
 
 function cancelVolume() {
   const m = state.volumeModal;
-  // 🆕 Если это новое замечание (не редактирование) и объём не введён — снимаем чип
   if (m && m.isNew && (!m.value || !String(m.value).trim())) {
     const rs = state.form.results[m.stateKey];
     if (rs) {
@@ -517,30 +510,6 @@ function renderHome(app) {
   `;
 }
 
-    ${hasDraft ? `
-    <div class="card" style="background:#fff8e1;border:1px solid #f9ab00;">
-      <h2 style="margin-bottom:8px;">📋 Незавершённый осмотр</h2>
-      <p style="color:#b06000;font-size:14px;">У вас есть сохранённый черновик: ${escapeHtml(draftInfo)}.</p>
-      <button class="btn btn-primary btn-large" style="margin-top:12px;" onclick="continueDraft()">▶ Продолжить черновик</button>
-      <button class="btn btn-secondary" style="margin-top:8px;" onclick="discardDraft()">🗑 Удалить черновик</button>
-    </div>` : ''}
-
-    ${pending > 0 ? `
-    <div class="card" style="background:#e8f0fe;border:1px solid #1a73e8;">
-      <h2 style="margin-bottom:8px;">📤 Ожидают отправки: ${pending}</h2>
-      <p style="color:#1a73e8;font-size:14px;">${online && !isBad ? 'Идёт отправка…' : 'Отправятся, как только появится связь.'}</p>
-      <button class="btn btn-primary" style="margin-top:12px;" onclick="showQueue()">📋 Открыть очередь</button>
-      ${online && !isBad ? `<button class="btn btn-secondary" style="margin-top:8px;" onclick="syncAllNow()">🔄 Отправить всё сейчас</button>` : ''}
-    </div>` : ''}
-
-    <div class="card">
-      <button class="btn btn-primary btn-large" onclick="startNewVisit()">🏠 Новый осмотр</button>
-      <button class="btn btn-secondary" onclick="showVisits()">📋 Мои осмотры</button>
-      <button class="btn btn-secondary" onclick="showSettings()">⚙ Настройки</button>
-    </div>
-  `;
-}
-
 async function syncAllNow() {
   if (!window.sync) return;
   if (window.sync.resetAllAttempts) await window.sync.resetAllAttempts();
@@ -662,6 +631,7 @@ async function renderSettings(app) {
     </div>
   `;
 }
+
 async function openNameChange() {
   state.nameMode = 'change';
   state.screen = 'name';
@@ -717,7 +687,6 @@ async function updateReferenceNow() {
     const refData = (refRes && refRes.data) ? refRes.data : refRes;
     await window.db.setReference(refData);
 
-    // ⚠️ getRemarksFull — новый метод с requireVolume и unit
     const remRes = await apiGet('getRemarksFull');
     const remData = (remRes && remRes.data) ? remRes.data : remRes;
     await window.db.setRemarks(remData);
@@ -835,8 +804,8 @@ function renderVisitCard(v) {
           if (Array.isArray(rs.commonPhotos)) n += rs.commonPhotos.length;
           if (Array.isArray(rs.photos)) n += rs.photos.length;
           if (rs.photosByVariant) {
-            Object.keys(rs.photosByVariant).forEach(v => {
-              n += (rs.photosByVariant[v] || []).length;
+            Object.keys(rs.photosByVariant).forEach(vv => {
+              n += (rs.photosByVariant[vv] || []).length;
             });
           }
           return sum + n;
@@ -1138,18 +1107,6 @@ async function resetAttemptsNow() {
   alert('Попытки сброшены. Можете нажать «Отправить всё сейчас».');
 }
 
-async function deleteQueuedVisit(clientId) {
-  if (!confirm('Удалить осмотр из очереди? Данные и фото не будут отправлены.')) return;
-  try {
-    const photos = await window.db.getPhotosForVisit(clientId);
-    for (const p of photos) { await window.db.deletePhoto(p.photoId); }
-  } catch (e) {}
-  if (window.db && window.db.deleteVisit) await window.db.deleteVisit(clientId);
-  await refreshQueueStats();
-  state.queueList = await window.db.getAllVisits();
-  render();
-}
-
 // ================= ДИАГНОСТИКА =================
 async function showDiagnostics() {
   try {
@@ -1254,9 +1211,7 @@ async function discardDraft() {
 }
 
 // ================= ШАГ 1 =================
-// 🆕 Исправлено: явная очистка черновика перед стартом
 function startNewVisit() {
-  // Явно очищаем черновик + удаляем фото, привязанные к старому draftId
   if (state.draftId) {
     window.db.getPhotosForVisit(state.draftId)
       .then(photos => {
@@ -1831,7 +1786,6 @@ async function onPhotoSelected2(event, stateKey, variantKey) {
 }
 
 function removePhotoFromSection(stateKey, variantKey, index) {
-  // 🆕 Защита от двойного клика
   if (_deletingPhoto) return;
   _deletingPhoto = true;
   setTimeout(() => { _deletingPhoto = false; }, 500);
@@ -2234,8 +2188,8 @@ function escapeAttr(str) {
 function cssEscape(str) {
   return String(str).replace(/[^a-zA-Z0-9_\-\.]/g, '\\$&');
 }
-// ================= ДИАГНОСТИКА API =================
 
+// ================= ДИАГНОСТИКА API =================
 async function forcePingCheck() {
   const t0 = Date.now();
   let detail = { at: Date.now(), ok: false, elapsed: 0, status: 0, body: '', error: '' };
@@ -2259,7 +2213,6 @@ async function forcePingCheck() {
     detail.error = e.name === 'AbortError' ? 'timeout' : (e.message || String(e));
   }
 
-  // Обновляем meta
   try {
     await window.db.setMeta('apiReachable', { ok: detail.ok, at: Date.now() });
     await window.db.setMeta('pingDetail', detail);
@@ -2330,13 +2283,7 @@ async function showPingDiagnostics() {
   alert(lines.join('\n'));
 }
 
-// Экспорт для onclick
-window.forcePingCheck = forcePingCheck;
-window.startBannerLongPress = startBannerLongPress;
-window.cancelBannerLongPress = cancelBannerLongPress;
-window.showPingDiagnostics = showPingDiagnostics;
 // ================= ОЧЕРЕДЬ: вспомогательные =================
-
 function buildVisitRemarksList(visit) {
   const results = (visit.payload && visit.payload.results) || {};
   const lines = [];
@@ -2388,7 +2335,6 @@ function countVisitPhotos(visit) {
 }
 
 // ================= СТАТУС ПОСЛЕДНЕЙ КОПИИ =================
-
 function renderQueueBackupStatus() {
   if (!state.queueStats.pendingVisits) return '';
   const meta = state.queueStats.lastQueueBackupAt;
@@ -2405,7 +2351,6 @@ function renderQueueBackupStatus() {
 }
 
 // ================= ЗАГРУЗКА ОЧЕРЕДИ В ОБЛАКО =================
-
 async function uploadQueueToDrive() {
   if (state.queueBackupBusy) return;
   if (!navigator.onLine) {
@@ -2482,7 +2427,6 @@ async function postApiRaw(action, payload) {
 }
 
 // ================= АВТО-ЗАГРУЗКА =================
-
 async function maybeAutoBackupQueue() {
   if (!navigator.onLine) return;
   if (document.visibilityState !== 'visible') return;
@@ -2512,7 +2456,6 @@ async function maybeAutoBackupQueue() {
 }
 
 // ================= ПРОСМОТР ОСМОТРА (модалка) =================
-
 async function showVisitPreview(clientId) {
   console.log('[preview] Открываем осмотр:', clientId);
 
@@ -2687,8 +2630,8 @@ function renderVisitPreviewModal() {
   `;
   document.body.appendChild(backdrop);
 }
-// ================= ЛАЙТБОКС ФОТО =================
 
+// ================= ЛАЙТБОКС ФОТО =================
 function openPhotoLightbox(url) {
   state.photoLightbox = { url: url };
   renderPhotoLightbox();
@@ -2719,7 +2662,6 @@ function renderPhotoLightbox() {
 }
 
 // ================= ДЕЙСТВИЯ ИЗ КАРТОЧКИ ОЧЕРЕДИ =================
-
 async function sendVisitNow(clientId) {
   if (!navigator.onLine) {
     alert('Нет интернета. Дождитесь подключения.');
@@ -2751,7 +2693,11 @@ async function resetVisitAttempts(clientId) {
   render();
 }
 
-// Экспорт для onclick
+// ================= ЭКСПОРТ ДЛЯ ONCLICK =================
+window.forcePingCheck = forcePingCheck;
+window.startBannerLongPress = startBannerLongPress;
+window.cancelBannerLongPress = cancelBannerLongPress;
+window.showPingDiagnostics = showPingDiagnostics;
 window.showVisitPreview = showVisitPreview;
 window.closeVisitPreview = closeVisitPreview;
 window.openPhotoLightbox = openPhotoLightbox;
