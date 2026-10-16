@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.1.2';
+const APP_VERSION = '1.1.3';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -90,9 +90,23 @@ function registerServiceWorker() {
   });
 }
 
-// 🆕 Исправленный механизм обновления
+// ================= ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ =================
+
+// Комбинированный механизм обновления:
+//  - Первый reload — активирует новый SW
+//  - Второй reload (через sessionStorage) — подтягивает свежие файлы через SW
+//  - Защита от гонки: пауза 300 мс после controllerchange
+
 function applySwUpdate() {
   if (!('serviceWorker' in navigator)) {
+    hardReload();
+    return;
+  }
+
+  // Если это повторный заход после обновления — просто перезагружаемся
+  if (sessionStorage.getItem('__sw_updated') === '1') {
+    sessionStorage.removeItem('__sw_updated');
+    console.log('[SW] Второй reload после обновления');
     hardReload();
     return;
   }
@@ -101,33 +115,53 @@ function applySwUpdate() {
   const doReload = () => {
     if (reloaded) return;
     reloaded = true;
-    hardReload();
+    sessionStorage.setItem('__sw_updated', '1');
+    // Небольшая пауза, чтобы новый SW точно перехватил управление
+    setTimeout(hardReload, 300);
   };
 
-  // Слушаем смену контроллера — когда новый SW активируется, страница перезагрузится
   navigator.serviceWorker.addEventListener('controllerchange', doReload, { once: true });
 
   navigator.serviceWorker.getRegistration().then((reg) => {
-    if (reg && reg.waiting) {
-      console.log('[SW] Отправляем SKIP_WAITING');
+    if (!reg) {
+      console.log('[SW] Нет регистрации');
+      doReload();
+      return;
+    }
+
+    if (reg.waiting) {
+      console.log('[SW] waiting → SKIP_WAITING');
       reg.waiting.postMessage({ type: 'SKIP_WAITING' });
-    } else if (reg && reg.installing) {
-      console.log('[SW] Новый SW ещё устанавливается, ждём…');
+    } else if (reg.installing) {
+      console.log('[SW] installing → ждём installed');
       reg.installing.addEventListener('statechange', (e) => {
         if (e.target.state === 'installed') {
           e.target.postMessage({ type: 'SKIP_WAITING' });
         }
       });
     } else {
-      // Нет waiting/installing — возможно, обновилось в фоне
-      console.log('[SW] Нет waiting — перезагружаемся');
-      setTimeout(doReload, 200);
+      console.log('[SW] нет waiting/installing');
+      doReload();
     }
-    // Страховка: если через 3 сек ничего не произошло — жёсткая перезагрузка
-    setTimeout(doReload, 3000);
+
+    // Страховка: если через 5 сек ничего не произошло
+    setTimeout(doReload, 5000);
   }).catch(() => {
     doReload();
   });
+}
+
+// Жёсткая перезагрузка: обходит HTTP-кэш браузера через query-параметр
+function hardReload() {
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('_r', Date.now());
+    console.log('[SW] Hard reload →', url.toString());
+    location.replace(url.toString());
+  } catch (e) {
+    // Фолбэк для старых браузеров
+    location.reload();
+  }
 }
 
 // Жёсткая перезагрузка: обходит HTTP-кэш браузера через query-параметр
