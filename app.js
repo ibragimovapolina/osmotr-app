@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.0.8';
+const APP_VERSION = '1.0.9';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -31,6 +31,9 @@ const state = {
   volumeModal: null,
   swUpdateAvailable: false
 };
+
+// Флаг защиты от двойного клика по «удалить фото»
+let _deletingPhoto = false;
 
 // ================= СТАРТ =================
 document.addEventListener('DOMContentLoaded', init);
@@ -74,9 +77,7 @@ function registerServiceWorker() {
       });
     });
 
-    setInterval(() => {
-      reg.update().catch(() => {});
-    }, 30 * 60 * 1000);
+    setInterval(() => { reg.update().catch(() => {}); }, 30 * 60 * 1000);
 
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
@@ -88,17 +89,35 @@ function registerServiceWorker() {
   });
 }
 
+// 🆕 Исправленный механизм обновления
 function applySwUpdate() {
   if (!('serviceWorker' in navigator)) {
     location.reload();
     return;
   }
+
+  let reloaded = false;
+  const doReload = () => {
+    if (reloaded) return;
+    reloaded = true;
+    location.reload();
+  };
+
+  // Слушаем смену контроллера — когда новый SW активируется, страница перезагрузится
+  navigator.serviceWorker.addEventListener('controllerchange', doReload, { once: true });
+
   navigator.serviceWorker.getRegistration().then((reg) => {
     if (reg && reg.waiting) {
+      // Просим новый SW активироваться немедленно
       reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+    } else {
+      setTimeout(doReload, 200);
     }
-    setTimeout(() => { location.reload(); }, 400);
-  }).catch(() => { location.reload(); });
+    // Страховка: если через 3 секунды ничего не произошло — перезагружаем
+    setTimeout(doReload, 3000);
+  }).catch(() => {
+    doReload();
+  });
 }
 
 // ================= ПРОДОЛЖЕНИЕ СТАРТА =================
@@ -220,7 +239,8 @@ function openVolumeModal(stateKey, variant, unit, currentValue) {
     stateKey: stateKey,
     variant: variant,
     unit: unit || '',
-    value: currentValue !== undefined && currentValue !== null ? String(currentValue) : ''
+    value: currentValue !== undefined && currentValue !== null ? String(currentValue) : '',
+    isNew: !currentValue
   };
   renderVolumeModal();
 }
@@ -272,6 +292,19 @@ function onVolumeInput(value) {
 }
 
 function cancelVolume() {
+  const m = state.volumeModal;
+  // 🆕 Если это новое замечание (не редактирование) и объём не введён — снимаем чип
+  if (m && m.isNew && (!m.value || !String(m.value).trim())) {
+    const rs = state.form.results[m.stateKey];
+    if (rs) {
+      const idx = rs.selected.indexOf(m.variant);
+      if (idx >= 0) rs.selected.splice(idx, 1);
+      if (rs.volumes) delete rs.volumes[m.variant];
+      state.form.results[m.stateKey] = rs;
+      setTimeout(() => updateObjectCard(m.stateKey), 50);
+      autoSave();
+    }
+  }
   state.volumeModal = null;
   closeVolumeModal();
 }
@@ -558,7 +591,7 @@ async function updateReferenceNow() {
     const refData = (refRes && refRes.data) ? refRes.data : refRes;
     await window.db.setReference(refData);
 
-    // ⚠️ ВАЖНО: getRemarksFull — новый метод с requireVolume и unit
+    // ⚠️ getRemarksFull — новый метод с requireVolume и unit
     const remRes = await apiGet('getRemarksFull');
     const remData = (remRes && remRes.data) ? remRes.data : remRes;
     await window.db.setRemarks(remData);
@@ -1076,7 +1109,22 @@ async function discardDraft() {
 }
 
 // ================= ШАГ 1 =================
+// 🆕 Исправлено: явная очистка черновика перед стартом
 function startNewVisit() {
+  // Явно очищаем черновик + удаляем фото, привязанные к старому draftId
+  if (state.draftId) {
+    window.db.getPhotosForVisit(state.draftId)
+      .then(photos => {
+        photos.forEach(p => {
+          if (p && p.photoId && window.db.deletePhoto) {
+            window.db.deletePhoto(p.photoId).catch(() => {});
+          }
+        });
+      })
+      .catch(() => {});
+  }
+  if (window.db && window.db.clearDraft) window.db.clearDraft().catch(() => {});
+
   state.form = {
     kvNumber: '', apartment: null, editedFields: {},
     divisions: [], currentDivisionIndex: 0, results: {}, uploading: {},
@@ -1088,7 +1136,6 @@ function startNewVisit() {
   state.volumeModal = null;
   state.draftId = window.db.uuid();
   state.screen = 'newVisitKv';
-  if (window.db && window.db.clearDraft) window.db.clearDraft().catch(() => {});
   render();
 }
 
@@ -1639,6 +1686,11 @@ async function onPhotoSelected2(event, stateKey, variantKey) {
 }
 
 function removePhotoFromSection(stateKey, variantKey, index) {
+  // 🆕 Защита от двойного клика
+  if (_deletingPhoto) return;
+  _deletingPhoto = true;
+  setTimeout(() => { _deletingPhoto = false; }, 500);
+
   const rs = state.form.results[stateKey];
   if (!rs) return;
   if (!confirm('Удалить это фото?')) return;
