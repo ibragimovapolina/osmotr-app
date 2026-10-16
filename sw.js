@@ -1,13 +1,12 @@
 // ================= Service Worker =================
 // Кэширует оболочку приложения, чтобы оно открывалось без интернета.
 //
-// ⚠️ При обновлении приложения МЕНЯЙТЕ SW_VERSION (например, '1.1.2').
+// ⚠️ При обновлении приложения МЕНЯЙТЕ SW_VERSION (например, '1.1.5').
 // Это автоматически сбросит старый кэш у всех пользователей.
 
-const SW_VERSION = '1.1.3';
+const SW_VERSION = '1.1.4';
 const CACHE_NAME = 'osmotr-' + SW_VERSION;
 
-// Файлы, которые нужно держать в кэше для офлайн-режима.
 const PRECACHE_URLS = [
   './',
   './index.html',
@@ -21,8 +20,6 @@ const PRECACHE_URLS = [
   './icon-512.png'
 ];
 
-// Эти файлы всегда стараемся взять из сети, кэш — только фолбэк.
-// Нужно, чтобы после обновления браузер сразу видел свежий код.
 const NETWORK_FIRST = [
   './app.js',
   './db.js',
@@ -35,7 +32,6 @@ self.addEventListener('install', (event) => {
   console.log('[SW] install, версия', SW_VERSION);
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      // cache: 'reload' — обходим HTTP-кэш браузера при precache
       return cache.addAll(PRECACHE_URLS.map(url => new Request(url, { cache: 'reload' })))
         .catch((err) => {
           console.warn('[SW] Не все файлы закэшированы:', err);
@@ -71,7 +67,6 @@ self.addEventListener('fetch', (event) => {
 
   if (isNetworkFirst) {
     event.respondWith(
-      // ⚠️ cache: 'reload' — обходим HTTP-кэш браузера, всегда идём в сеть
       fetch(req, { cache: 'reload' })
         .then((response) => {
           if (response && response.status === 200) {
@@ -95,7 +90,6 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Cache-first для всего остального (иконки, manifest, css)
   event.respondWith(
     caches.match(req).then((cached) => {
       if (cached) {
@@ -125,7 +119,6 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Обработка команды «активировать немедленно» от приложения
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
