@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.0.6';
+const APP_VERSION = '1.0.7';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -986,23 +986,73 @@ async function showDiagnostics() {
     const db = await window.db._openDB();
     const stores = Array.from(db.objectStoreNames);
     const stats = await window.db.getQueueStats();
+
     let ref = null, remarks = null, marks = null, version = null;
     try { ref = await window.db.getReference(); } catch(e) {}
     try { remarks = await window.db.getRemarks(); } catch(e) {}
     try { marks = await window.db.getMarks(); } catch(e) {}
     try { version = await window.db.getMeta('version'); } catch(e) {}
+
     const refCount = ref ? Object.keys(ref).length : 0;
     const remCount = remarks ? Object.keys(remarks).length : 0;
     const marksCount = marks ? Object.keys(marks).length : 0;
+
+    // === Анализ формата замечаний ===
+    let formatStatus = '—';
+    let requireVolumeCount = 0;
+    let totalVariants = 0;
+    let sampleInfo = '';
+    let sampleVariant = '';
+
+    if (remarks && Object.keys(remarks).length > 0) {
+      const firstType = Object.keys(remarks)[0];
+      const firstVariant = Object.keys(remarks[firstType] || {})[0];
+      const info = remarks[firstType][firstVariant];
+      sampleVariant = firstType + ' / ' + firstVariant;
+
+      if (typeof info === 'string') {
+        formatStatus = '❌ СТАРЫЙ (только текст)';
+        sampleInfo = '«' + String(info).substring(0, 60) + '»';
+      } else if (info && typeof info === 'object') {
+        if (typeof info.requireVolume === 'boolean') {
+          formatStatus = '✅ НОВЫЙ (есть requireVolume)';
+        } else {
+          formatStatus = '⚠ Объект, но без requireVolume';
+        }
+        sampleInfo = JSON.stringify(info).substring(0, 100);
+      } else {
+        formatStatus = '⚠ Неизвестный тип: ' + typeof info;
+        sampleInfo = String(info);
+      }
+
+      // Считаем, сколько замечаний требуют объёма
+      Object.keys(remarks).forEach(criterion => {
+        Object.keys(remarks[criterion] || {}).forEach(variant => {
+          totalVariants++;
+          const item = remarks[criterion][variant];
+          if (item && typeof item === 'object' && item.requireVolume) {
+            requireVolumeCount++;
+          }
+        });
+      });
+    } else {
+      formatStatus = '❌ Замечания в кэше ПУСТЫ';
+    }
+
     alert(
       '🔍 Диагностика\n\n' +
       'Версия приложения: ' + APP_VERSION + '\n' +
       'Пользователь: ' + (state.user.name || '—') + '\n\n' +
       'Хранилища (' + stores.length + '):\n' + stores.join(', ') + '\n\n' +
       'Справочник: ' + refCount + ' квартир\n' +
-      'Замечания: ' + remCount + ' типов\n' +
+      'Замечания: ' + remCount + ' типов, ' + totalVariants + ' вариантов\n' +
+      '  → требуют объёма: ' + requireVolumeCount + '\n' +
       'Марки окон: ' + marksCount + '\n' +
       'Версия данных: ' + (version ? JSON.stringify(version) : '—') + '\n\n' +
+      '🧪 Формат замечаний:\n' +
+      '  ' + formatStatus + '\n' +
+      '  Пример: ' + sampleVariant + '\n' +
+      '  ' + sampleInfo + '\n\n' +
       'Очередь осмотров: ' + stats.pendingVisits + '\n' +
       'Очередь фото: ' + stats.pendingPhotos + '\n' +
       'Всего осмотров: ' + stats.totalVisits + ' (синхр.: ' + stats.syncedVisits + ')\n\n' +
