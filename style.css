@@ -469,18 +469,19 @@ select.field-input {
 }
 
 .object-card {
-  background: #FAFAFA;
-  border-radius: 14px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
   padding: 18px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .object-title {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
   margin-bottom: 14px;
   color: var(--text);
-  letter-spacing: -0.1px;
+  letter-spacing: -0.2px;
 }
 
 /* ============ ЧИПЫ ============ */
@@ -500,7 +501,7 @@ select.field-input {
   border-radius: 21px;
   font-size: 14px;
   font-family: inherit;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text);
   cursor: pointer;
   transition: all 0.15s;
@@ -510,6 +511,7 @@ select.field-input {
 
 .chip:active {
   opacity: 0.75;
+  transform: scale(0.97);
 }
 
 .chip-selected {
@@ -554,7 +556,6 @@ select.field-input {
 .volume-badge:active {
   opacity: 0.7;
 }
-
 /* ============ СВОЁ ЗАМЕЧАНИЕ ============ */
 .custom-input {
   width: 100%;
@@ -591,7 +592,7 @@ select.field-input {
   position: relative;
   width: 84px;
   height: 84px;
-  border-radius: 12px;
+  border-radius: 14px;
   overflow: hidden;
   background: #F0F0F0;
 }
@@ -605,8 +606,8 @@ select.field-input {
 
 .photo-remove {
   position: absolute;
-  top: 4px;
-  right: 4px;
+  top: 5px;
+  right: 5px;
   width: 22px;
   height: 22px;
   border-radius: 50%;
@@ -633,7 +634,7 @@ select.field-input {
 .photo-spinner {
   width: 24px;
   height: 24px;
-  border: 3px solid var(--green-light);
+  border: 3px solid rgba(0, 168, 45, 0.2);
   border-top-color: var(--green);
   border-radius: 50%;
   animation: spin 1s linear infinite;
@@ -649,25 +650,29 @@ select.field-input {
   color: var(--green-dark);
   text-align: center;
   padding: 0 4px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .photo-add-label {
-  display: inline-block;
+  display: block;
   cursor: pointer;
 }
 
 .photo-add-btn {
-  display: inline-block;
-  padding: 12px 20px;
-  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 20px;
+  min-height: 48px;
   background: #fff;
   border: 2px dashed #D0D0D0;
-  border-radius: 12px;
+  border-radius: 14px;
   font-size: 14px;
   color: var(--text-secondary);
   font-weight: 600;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  width: 100%;
 }
 
 .photo-add-btn:active {
@@ -678,14 +683,33 @@ select.field-input {
 
 /* ============ СЕКЦИИ ФОТО ============ */
 .photo-sections {
-  margin-top: 12px;
+  margin-top: 14px;
 }
 
 .photo-section {
-  background: #fff;
-  border-radius: 12px;
-  padding: 12px 14px;
+  background: #F9F9FA;
+  border-radius: 14px;
+  padding: 14px 16px;
   margin-bottom: 10px;
+}
+
+.photo-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  word-wrap: break-word;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.photo-section .photo-list {
+  margin-bottom: 10px;
+}
+
+/* Скрытые чекбоксы в фото-кнопке */
+.photo-add-label input[type="file"] {
+  display: none;
 }
 
 .photo-section-title {
