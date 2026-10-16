@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.2.3';
+const APP_VERSION = '1.2.4';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
