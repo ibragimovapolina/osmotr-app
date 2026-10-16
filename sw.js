@@ -4,7 +4,7 @@
 // ⚠️ При обновлении приложения МЕНЯЙТЕ SW_VERSION (например, '1.0.1').
 // Это автоматически сбросит старый кэш у всех пользователей.
 
-const SW_VERSION = '1.1.0';
+const SW_VERSION = '1.1.1';
 const CACHE_NAME = 'osmotr-' + SW_VERSION;
 
 // Файлы, которые нужно держать в кэше для офлайн-режима.
@@ -127,11 +127,6 @@ self.addEventListener('fetch', (event) => {
   );
 });
 // Обработка команды «активировать немедленно» от приложения
-self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SKIP_WAITING') {
-    self.skipWaiting();
-  }
-});
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
