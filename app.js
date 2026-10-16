@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.1.4';
+const APP_VERSION = '1.1.5';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -448,7 +448,6 @@ function renderHome(app) {
 
   const online = navigator.onLine;
   const apiMeta = state.apiReachable || null;
-  // «Плохая сеть» — если API-проверка была недавно и провалилась (< 10 минут)
   const isBad = apiMeta && apiMeta.ok === false && (Date.now() - apiMeta.at) < 10 * 60 * 1000;
 
   let bannerBg, bannerColor, bannerIcon, bannerText;
@@ -477,17 +476,46 @@ function renderHome(app) {
       <div class="email">👤 ${escapeHtml(state.user.name || '—')}</div>
     </div>
 
-  <div class="card" id="statusBanner"
-     style="padding:12px 16px;background:${bannerBg};border:1px solid ${bannerColor};cursor:pointer;-webkit-user-select:none;user-select:none;"
-     ontouchstart="startBannerLongPress()" ontouchend="cancelBannerLongPress()" ontouchcancel="cancelBannerLongPress()"
-     onmousedown="startBannerLongPress()" onmouseup="cancelBannerLongPress()" onmouseleave="cancelBannerLongPress()">
-  <div style="font-size:14px;color:${bannerColor};">
-    ${bannerIcon} ${bannerText}
-  </div>
-  <div style="font-size:11px;color:${bannerColor};opacity:0.5;margin-top:2px;">
-    Удерживайте для диагностики
-  </div>
-</div>
+    <div class="card" id="statusBanner"
+         style="padding:12px 16px;background:${bannerBg};border:1px solid ${bannerColor};cursor:pointer;-webkit-user-select:none;user-select:none;"
+         ontouchstart="startBannerLongPress()" ontouchend="cancelBannerLongPress()" ontouchcancel="cancelBannerLongPress()"
+         onmousedown="startBannerLongPress()" onmouseup="cancelBannerLongPress()" onmouseleave="cancelBannerLongPress()">
+      <div style="font-size:14px;color:${bannerColor};">
+        ${bannerIcon} ${bannerText}
+      </div>
+      <div style="font-size:11px;color:${bannerColor};opacity:0.5;margin-top:2px;">
+        Удерживайте для диагностики
+      </div>
+    </div>
+
+    ${hasDraft ? `
+    <div class="card" style="background:#fff8e1;border:1px solid #f9ab00;">
+      <h2 style="margin-bottom:8px;">📋 Незавершённый осмотр</h2>
+      <p style="color:#b06000;font-size:14px;">У вас есть сохранённый черновик: ${escapeHtml(draftInfo)}.</p>
+      <button class="btn btn-primary btn-large" style="margin-top:12px;" onclick="continueDraft()">▶ Продолжить черновик</button>
+      <button class="btn btn-secondary" style="margin-top:8px;" onclick="discardDraft()">🗑 Удалить черновик</button>
+    </div>` : ''}
+
+    ${pending > 0 ? `
+    <div class="card" style="background:#e8f0fe;border:1px solid #1a73e8;">
+      <h2 style="margin-bottom:8px;">📤 Ожидают отправки: ${pending}</h2>
+      <p style="color:#1a73e8;font-size:14px;">${online && !isBad ? 'Идёт отправка…' : 'Отправятся, как только появится связь.'}</p>
+      <button class="btn btn-primary" style="margin-top:12px;" onclick="showQueue()">📋 Открыть очередь</button>
+      ${online && !isBad ? `<button class="btn btn-secondary" style="margin-top:8px;" onclick="syncAllNow()">🔄 Отправить всё сейчас</button>` : ''}
+    </div>` : `
+    <div class="card" style="background:#e6f4ea;border:1px solid #137333;">
+      <h2 style="margin-bottom:8px;">✅ Все осмотры отправлены</h2>
+      <p style="color:#137333;font-size:14px;">Очередь пуста.</p>
+      <button class="btn btn-secondary" style="margin-top:12px;" onclick="showQueue()">📋 Открыть очередь</button>
+    </div>`}
+
+    <div class="card">
+      <button class="btn btn-primary btn-large" onclick="startNewVisit()">🏠 Новый осмотр</button>
+      <button class="btn btn-secondary" onclick="showVisits()">📋 Мои осмотры</button>
+      <button class="btn btn-secondary" onclick="showSettings()">⚙ Настройки</button>
+    </div>
+  `;
+}
 
     ${hasDraft ? `
     <div class="card" style="background:#fff8e1;border:1px solid #f9ab00;">
@@ -511,10 +539,6 @@ function renderHome(app) {
       <button class="btn btn-secondary" onclick="showSettings()">⚙ Настройки</button>
     </div>
   `;
-  setTimeout(() => {
-    renderVisitPreviewModal();
-    renderPhotoLightbox();
-  }, 0);
 }
 
 async function syncAllNow() {
@@ -637,11 +661,6 @@ async function renderSettings(app) {
       <div class="app-version">Осмотры квартир · v${APP_VERSION}<br>Работает офлайн</div>
     </div>
   `;
-
-  setTimeout(() => {
-    renderVisitPreviewModal();
-    renderPhotoLightbox();
-  }, 0);
 }
 async function openNameChange() {
   state.nameMode = 'change';
@@ -767,33 +786,30 @@ function renderVisits(app) {
   else if (state.visitsFilter === 'pending') filtered = all.filter(v => v.status !== 'synced');
   filtered = filtered.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const limited = filtered.slice(0, 200);
-  const filterBtn = (key, label) => `
-    <button class="filter-btn ${state.visitsFilter === key ? 'active' : ''}"
-            onclick="setVisitsFilter('${key}')">${label}</button>
-  `;
+
   const itemsHtml = limited.length
     ? limited.map(v => renderVisitCard(v)).join('')
     : '<div class="hint">Здесь пока ничего нет.</div>';
+
   app.innerHTML = `
     <div class="card">
       <div class="step-header">
         <h2>Мои осмотры</h2>
         <p>Всего: ${all.length}. Показано: ${limited.length}.</p>
       </div>
-      <div class="visits-filter">
-        ${filterBtn('all', 'Все')}
-        ${filterBtn('synced', 'Отправленные')}
-        ${filterBtn('pending', 'В очереди')}
+      <div style="margin-bottom:12px;">
+        <label class="field-label" style="font-size:13px;">Фильтр</label>
+        <select class="field-input" onchange="setVisitsFilter(this.value)" style="width:100%;">
+          <option value="all" ${state.visitsFilter === 'all' ? 'selected' : ''}>Все осмотры</option>
+          <option value="synced" ${state.visitsFilter === 'synced' ? 'selected' : ''}>Отправленные</option>
+          <option value="pending" ${state.visitsFilter === 'pending' ? 'selected' : ''}>В очереди</option>
+        </select>
       </div>
       ${itemsHtml}
       ${all.length > 0 ? `<button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="exportVisitsCsv()">📥 Скачать CSV</button>` : ''}
       <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
     </div>
   `;
-  setTimeout(() => {
-    renderVisitPreviewModal();
-    renderPhotoLightbox();
-  }, 0);
 }
 
 function renderVisitCard(v) {
@@ -1071,7 +1087,6 @@ function renderQueue(app) {
         } else {
           statusText = v.status;
         }
-                const remarksList = buildVisitRemarksList(v);
         const photoCount = countVisitPhotos(v);
         return `
           <div class="object-card">
@@ -1079,14 +1094,6 @@ function renderQueue(app) {
             <p style="font-size:14px;color:#5f6368;margin-bottom:8px;">${escapeHtml(when)}</p>
             <p style="font-size:14px;color:${v.status === 'error' ? '#c5221f' : '#5f6368'};">${escapeHtml(statusText)}</p>
             <p style="font-size:13px;color:#5f6368;margin:8px 0;">📷 Фото: ${photoCount}</p>
-            ${remarksList.length ? `
-              <div style="font-size:13px;color:#202124;margin:8px 0;">
-                <strong>Замечания:</strong>
-                <ul style="margin:4px 0 0 16px;padding:0;">
-                  ${remarksList.map(r => `<li>${escapeHtml(r)}</li>`).join('')}
-                </ul>
-              </div>
-            ` : ''}
             <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
               <button class="btn btn-secondary" onclick="showVisitPreview('${escapeAttr(v.clientId)}')">👁 Посмотреть</button>
               ${navigator.onLine ? `<button class="btn btn-secondary" onclick="sendVisitNow('${escapeAttr(v.clientId)}')">📤 Отправить этот</button>` : ''}
@@ -1096,6 +1103,7 @@ function renderQueue(app) {
         `;
       }).join('')
     : '<div class="hint">Очередь пуста.</div>';
+
   app.innerHTML = `
     <div class="card">
       <div class="step-header">
@@ -1103,7 +1111,7 @@ function renderQueue(app) {
         <p>Всего в очереди: ${pending.length}</p>
       </div>
       ${itemsHtml}
-            ${pending.length ? `<button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="resetAttemptsNow()">🔄 Сбросить все попытки</button>` : ''}
+      ${pending.length ? `<button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="resetAttemptsNow()">🔄 Сбросить все попытки</button>` : ''}
       ${pending.length && navigator.onLine ? `<button class="btn btn-primary btn-large" style="margin-top:8px;" onclick="syncAllNow()">📤 Отправить всё сейчас</button>` : ''}
       ${pending.length ? `
         <hr style="margin:16px 0;border:none;border-top:1px solid #e0e0e0;">
@@ -1119,10 +1127,6 @@ function renderQueue(app) {
       <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
     </div>
   `;
-  setTimeout(() => {
-    renderVisitPreviewModal();
-    renderPhotoLightbox();
-  }, 0);
 }
 
 async function resetAttemptsNow() {
@@ -2510,18 +2514,37 @@ async function maybeAutoBackupQueue() {
 // ================= ПРОСМОТР ОСМОТРА (модалка) =================
 
 async function showVisitPreview(clientId) {
+  console.log('[preview] Открываем осмотр:', clientId);
+
   const visit = await window.db.getVisit(clientId);
-  if (!visit) return;
+  if (!visit) {
+    console.warn('[preview] Осмотр не найден');
+    alert('Осмотр не найден');
+    return;
+  }
 
   const photos = await window.db.getPhotosForVisit(clientId);
+  console.log('[preview] Фото из DB:', photos.length);
+  if (photos.length) {
+    console.log('[preview] Первое фото:', photos[0]);
+    console.log('[preview] blob:', photos[0].blob, '| stateKey:', photos[0].stateKey, '| variantKey:', photos[0].variantKey);
+  }
+
   const fresh = photos.map(p => {
     let url = '';
     try {
-      if (p.blob) url = URL.createObjectURL(p.blob);
-      else if (p.localUrl) url = p.localUrl;
-    } catch (e) {}
+      if (p.blob && typeof p.blob === 'object') {
+        url = URL.createObjectURL(p.blob);
+      } else if (p.localUrl) {
+        url = p.localUrl;
+      }
+    } catch (e) {
+      console.warn('[preview] Ошибка создания URL:', e.message);
+    }
     return Object.assign({}, p, { freshUrl: url });
   });
+
+  console.log('[preview] freshUrl у первого фото:', fresh[0] && fresh[0].freshUrl);
 
   state.visitPreview = { visit: visit, photos: fresh };
   renderVisitPreviewModal();
@@ -2563,18 +2586,24 @@ function renderVisitPreviewModal() {
   const results = (v.payload && v.payload.results) || {};
   const comments = (v.payload && v.payload.comments) || '';
 
+  // Группируем фото по stateKey
   const photosByState = {};
   preview.photos.forEach(p => {
-    if (!photosByState[p.stateKey]) photosByState[p.stateKey] = { common: [], variants: {} };
+    const sk = p.stateKey || '__unknown__';
+    if (!photosByState[sk]) photosByState[sk] = { common: [], variants: {} };
     if (!p.variantKey) {
-      photosByState[p.stateKey].common.push(p);
+      photosByState[sk].common.push(p);
     } else {
-      if (!photosByState[p.stateKey].variants[p.variantKey]) photosByState[p.stateKey].variants[p.variantKey] = [];
-      photosByState[p.stateKey].variants[p.variantKey].push(p);
+      if (!photosByState[sk].variants[p.variantKey]) photosByState[sk].variants[p.variantKey] = [];
+      photosByState[sk].variants[p.variantKey].push(p);
     }
   });
 
-  const stateKeys = Object.keys(results).sort();
+  // Собираем ВСЕ ключи: из results + из photosByState
+  const allKeys = {};
+  Object.keys(results).forEach(k => { allKeys[k] = true; });
+  Object.keys(photosByState).forEach(k => { if (k !== '__unknown__') allKeys[k] = true; });
+  const stateKeys = Object.keys(allKeys).sort();
 
   const blocksHtml = stateKeys.map(stateKey => {
     const rs = results[stateKey] || {};
@@ -2598,10 +2627,13 @@ function renderVisitPreviewModal() {
       }
     }
 
-    const renderThumb = (p) => p.freshUrl
-      ? `<img src="${escapeAttr(p.freshUrl)}" class="preview-thumb"
-              onclick="openPhotoLightbox('${escapeAttr(p.freshUrl)}')">`
-      : `<div class="preview-thumb-missing">нет превью</div>`;
+    const renderThumb = (p) => {
+      if (p.freshUrl) {
+        return `<img src="${escapeAttr(p.freshUrl)}" class="preview-thumb"
+                     onclick="openPhotoLightbox('${escapeAttr(p.freshUrl)}')">`;
+      }
+      return `<div class="preview-thumb-missing">нет фото</div>`;
+    };
 
     const commonHtml = ph.common.length
       ? `<div class="preview-photo-row"><span class="preview-photo-label">Общий вид:</span>
@@ -2655,7 +2687,6 @@ function renderVisitPreviewModal() {
   `;
   document.body.appendChild(backdrop);
 }
-
 // ================= ЛАЙТБОКС ФОТО =================
 
 function openPhotoLightbox(url) {
