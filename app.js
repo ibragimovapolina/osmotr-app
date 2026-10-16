@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -435,11 +435,8 @@ function cancelNameChange() {
 // ================= ГЛАВНЫЙ ЭКРАН =================
 function renderHome(app) {
   const hasDraft = !!state.pendingDraft;
-  const draftInfo = hasDraft && state.pendingDraft.form
-    ? `Квартира ${state.pendingDraft.form.kvNumber || '—'}` : '';
   const pending = state.queueStats.pendingVisits || 0;
 
-  // Приветствие
   const firstName = (state.user.name || '').split(' ')[0] || 'друг';
   const now = new Date();
   const dateStr = now.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -457,51 +454,50 @@ function renderHome(app) {
 
     <div class="main-actions">
       <button class="main-action-card green" onclick="startNewVisit()">
-        <div class="icon-big">🏠</div>
+        <div class="action-icon">${iconHome(28)}</div>
         <div class="action-info">
-          <div class="action-title">Новый<br>осмотр</div>
+          <div class="action-title">Новый осмотр</div>
         </div>
       </button>
       <button class="main-action-card purple" onclick="showVisits()">
-        <div class="icon-big">📋</div>
+        <div class="action-icon">${iconList(28)}</div>
         <div class="action-info">
-          <div class="action-title">Мои<br>осмотры</div>
+          <div class="action-title">Мои осмотры</div>
         </div>
       </button>
     </div>
 
     ${hasDraft ? `
-    <div class="list-row" onclick="continueDraft()">
-      <div class="list-row-icon yellow">📝</div>
+    <button class="list-row" onclick="continueDraft()">
+      <div class="list-row-icon yellow">${iconPencil(22)}</div>
       <div class="list-row-content">
         <div class="list-row-title">Продолжить черновик</div>
         <div class="list-row-subtitle">Квартира ${escapeHtml(state.pendingDraft.form.kvNumber || '—')}</div>
       </div>
-      <div class="list-row-arrow">›</div>
-    </div>` : ''}
+      <div class="list-row-arrow">${iconChevronRight(20)}</div>
+    </button>` : ''}
 
-    <div class="list-row" onclick="showQueue()">
+    <button class="list-row" onclick="showQueue()">
       <div class="list-row-icon ${pending > 0 ? 'blue' : 'green'}">
-        ${pending > 0 ? '📤' : '✅'}
+        ${pending > 0 ? iconArrowUpCircle(22) : iconCheckCircle(22)}
       </div>
       <div class="list-row-content">
         <div class="list-row-title">Очередь отправки</div>
         <div class="list-row-subtitle">${pending > 0 ? pending + ' ' + pluralVisits(pending) + ' ждёт отправки' : 'Всё отправлено'}</div>
       </div>
-      <div class="list-row-arrow">›</div>
-    </div>
+      <div class="list-row-arrow">${iconChevronRight(20)}</div>
+    </button>
 
-    <div class="list-row" onclick="showSettings()">
-      <div class="list-row-icon blue">⚙️</div>
+    <button class="list-row" onclick="showSettings()">
+      <div class="list-row-icon blue">${iconGear(22)}</div>
       <div class="list-row-content">
         <div class="list-row-title">Настройки</div>
         <div class="list-row-subtitle">Профиль, данные, диагностика</div>
       </div>
-      <div class="list-row-arrow">›</div>
-    </div>
+      <div class="list-row-arrow">${iconChevronRight(20)}</div>
+    </button>
   `;
 }
-
 function pluralVisits(n) {
   const mod10 = n % 10;
   const mod100 = n % 100;
@@ -2730,3 +2726,126 @@ window.closePhotoLightbox = closePhotoLightbox;
 window.uploadQueueToDrive = uploadQueueToDrive;
 window.sendVisitNow = sendVisitNow;
 window.resetVisitAttempts = resetVisitAttempts;
+// ================= SVG-ИКОНКИ (стиль Evernote) =================
+// Тонкие линейные иконки. Используют currentColor — цвет наследуется от родителя.
+// Параметр size — размер в px (по умолчанию 24).
+
+function iconHome(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 10.5L12 3l9 7.5"/>
+    <path d="M5 9.5V21h14V9.5"/>
+    <path d="M9 21v-6h6v6"/>
+  </svg>`;
+}
+
+function iconList(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="3" width="14" height="18" rx="2"/>
+    <path d="M9 8h6"/>
+    <path d="M9 12h6"/>
+    <path d="M9 16h4"/>
+  </svg>`;
+}
+
+function iconPencil(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 20h9"/>
+    <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/>
+  </svg>`;
+}
+
+function iconArrowUpCircle(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M12 16V8"/>
+    <path d="M8 12l4-4 4 4"/>
+  </svg>`;
+}
+
+function iconCheckCircle(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M8 12.5l2.5 2.5L16 9.5"/>
+  </svg>`;
+}
+
+function iconGear(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+  </svg>`;
+}
+
+function iconArrowLeft(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M19 12H5"/>
+    <path d="M12 19l-7-7 7-7"/>
+  </svg>`;
+}
+
+function iconChevronRight(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 18l6-6-6-6"/>
+  </svg>`;
+}
+
+function iconEye(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </svg>`;
+}
+
+function iconSend(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 2L11 13"/>
+    <path d="M22 2l-7 20-4-9-9-4 20-7z"/>
+  </svg>`;
+}
+
+function iconRefresh(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M23 4v6h-6"/>
+    <path d="M1 20v-6h6"/>
+    <path d="M3.51 9a9 9 0 0114.85-3.36L23 10"/>
+    <path d="M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+  </svg>`;
+}
+
+function iconX(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 6L6 18"/>
+    <path d="M6 6l12 12"/>
+  </svg>`;
+}
+
+function iconTrash(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 6h18"/>
+    <path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+    <path d="M10 11v6"/>
+    <path d="M14 11v6"/>
+  </svg>`;
+}
+
+function iconPlus(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 5v14"/>
+    <path d="M5 12h14"/>
+  </svg>`;
+}
