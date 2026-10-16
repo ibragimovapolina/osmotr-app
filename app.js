@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.0.9';
+const APP_VERSION = '1.1.0';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -29,6 +29,7 @@ const state = {
   kvWarning: null,
   settingsMessage: null,
   volumeModal: null,
+  apiReachable: null,
   swUpdateAvailable: false
 };
 
@@ -155,6 +156,9 @@ async function refreshQueueStats() {
   if (!window.db || !window.db.getQueueStats) return;
   try {
     state.queueStats = await window.db.getQueueStats();
+  } catch (e) {}
+  try {
+    state.apiReachable = await window.db.getMeta('apiReachable');
   } catch (e) {}
 }
 
@@ -388,7 +392,29 @@ function renderHome(app) {
   const draftInfo = hasDraft && state.pendingDraft.form
     ? `Квартира ${state.pendingDraft.form.kvNumber || '—'}` : '';
   const pending = state.queueStats.pendingVisits || 0;
+
   const online = navigator.onLine;
+  const apiMeta = state.apiReachable || null;
+  // «Плохая сеть» — если API-проверка была недавно и провалилась (< 10 минут)
+  const isBad = apiMeta && apiMeta.ok === false && (Date.now() - apiMeta.at) < 10 * 60 * 1000;
+
+  let bannerBg, bannerColor, bannerIcon, bannerText;
+  if (!online) {
+    bannerBg = '#fce8e6';
+    bannerColor = '#c5221f';
+    bannerIcon = '🔴';
+    bannerText = 'Офлайн — данные сохраняются локально';
+  } else if (isBad) {
+    bannerBg = '#fef7e0';
+    bannerColor = '#b06000';
+    bannerIcon = '🟡';
+    bannerText = 'Сейчас работают только "белые списки" 😔';
+  } else {
+    bannerBg = '#e6f4ea';
+    bannerColor = '#137333';
+    bannerIcon = '🟢';
+    bannerText = 'Онлайн';
+  }
 
   app.innerHTML = `
     ${renderSwUpdateBanner()}
@@ -398,9 +424,9 @@ function renderHome(app) {
       <div class="email">👤 ${escapeHtml(state.user.name || '—')}</div>
     </div>
 
-    <div class="card" style="padding:12px 16px;background:${online ? '#e6f4ea' : '#fce8e6'};border:1px solid ${online ? '#34a853' : '#ea4335'};">
-      <div style="font-size:14px;color:${online ? '#137333' : '#c5221f'};">
-        ${online ? '🟢 Онлайн' : '🔴 Офлайн — данные сохраняются локально'}
+    <div class="card" style="padding:12px 16px;background:${bannerBg};border:1px solid ${bannerColor};">
+      <div style="font-size:14px;color:${bannerColor};">
+        ${bannerIcon} ${bannerText}
       </div>
     </div>
 
@@ -415,9 +441,9 @@ function renderHome(app) {
     ${pending > 0 ? `
     <div class="card" style="background:#e8f0fe;border:1px solid #1a73e8;">
       <h2 style="margin-bottom:8px;">📤 Ожидают отправки: ${pending}</h2>
-      <p style="color:#1a73e8;font-size:14px;">${online ? 'Идёт отправка…' : 'Появятся в сети — отправятся автоматически.'}</p>
+      <p style="color:#1a73e8;font-size:14px;">${online && !isBad ? 'Идёт отправка…' : 'Отправятся, как только появится связь.'}</p>
       <button class="btn btn-primary" style="margin-top:12px;" onclick="showQueue()">📋 Открыть очередь</button>
-      ${online ? `<button class="btn btn-secondary" style="margin-top:8px;" onclick="syncAllNow()">🔄 Отправить всё сейчас</button>` : ''}
+      ${online && !isBad ? `<button class="btn btn-secondary" style="margin-top:8px;" onclick="syncAllNow()">🔄 Отправить всё сейчас</button>` : ''}
     </div>` : ''}
 
     <div class="card">
