@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.1.3';
+const APP_VERSION = '1.1.4';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -29,8 +29,12 @@ const state = {
   kvWarning: null,
   settingsMessage: null,
   volumeModal: null,
-  apiReachable: null,
-  swUpdateAvailable: false
+    apiReachable: null,
+  swUpdateAvailable: false,
+  visitPreview: null,          // { visit, photos } — открытая модалка
+  photoLightbox: null,          // { url } — увеличенное фото
+  queueBackupBusy: false,       // флаг: идёт сохранение в облако
+  queueBackupMsg: null          // { type: 'ok'|'error', text } — сообщение
 };
 
 // Флаг защиты от двойного клика по «удалить фото»
@@ -164,24 +168,14 @@ function hardReload() {
   }
 }
 
-// Жёсткая перезагрузка: обходит HTTP-кэш браузера через query-параметр
-function hardReload() {
-  try {
-    const url = new URL(location.href);
-    url.searchParams.set('_r', Date.now());
-    console.log('[SW] Hard reload →', url.toString());
-    location.replace(url.toString());
-  } catch (e) {
-    // Фолбэк
-    location.reload();
-  }
-}
 
 // ================= ПРОДОЛЖЕНИЕ СТАРТА =================
 async function continueStartup() {
   if (window.db && window.db.resetStuckSyncing) {
     window.db.resetStuckSyncing(3).catch(() => {});
   }
+    // Автосохранение очереди — с задержкой, чтобы не мешать загрузке
+  setTimeout(() => { maybeAutoBackupQueue().catch(() => {}); }, 5000);
   const draft = await checkDraftOnStart();
   state.pendingDraft = draft;
   state.screen = 'home';
@@ -215,6 +209,9 @@ async function refreshQueueStats() {
   } catch (e) {}
   try {
     state.apiReachable = await window.db.getMeta('apiReachable');
+  } catch (e) {}
+  try {
+    state.queueStats.lastQueueBackupAt = await window.db.getMeta('lastQueueBackupAt');
   } catch (e) {}
 }
 
@@ -514,6 +511,10 @@ function renderHome(app) {
       <button class="btn btn-secondary" onclick="showSettings()">⚙ Настройки</button>
     </div>
   `;
+  setTimeout(() => {
+    renderVisitPreviewModal();
+    renderPhotoLightbox();
+  }, 0);
 }
 
 async function syncAllNow() {
@@ -595,6 +596,19 @@ async function renderSettings(app) {
         </div>
         <button class="btn btn-primary" style="margin-top:12px;" onclick="updateReferenceNow()">🔄 Обновить справочник</button>
         <button class="btn btn-secondary" style="margin-top:8px;" onclick="exportVisitsCsvFromSettings()">📥 Скачать осмотры (CSV)</button>
+
+        <hr style="margin:16px 0;border:none;border-top:1px solid #e0e0e0;">
+        <p style="font-size:13px;color:#5f6368;margin-bottom:8px;">
+          Если осмотры долго не отправляются из очереди — нажмите сюда. Копия уйдёт в облако, и данные не потеряются.
+        </p>
+        <button class="btn btn-primary" id="queueBackupBtn"
+                onclick="uploadQueueToDrive()"
+                ${state.queueStats.pendingVisits === 0 ? 'disabled' : ''}>
+          📤 Не отправляется? Нажмите сюда
+        </button>
+        <div style="font-size:12px;color:#5f6368;margin-top:6px;">Копия уйдёт в облако</div>
+        ${state.queueBackupMsg ? `<div class="update-info ${state.queueBackupMsg.type === 'error' ? 'error' : 'ok'}" style="margin-top:8px;">${escapeHtml(state.queueBackupMsg.text)}</div>` : ''}
+        ${renderQueueBackupStatus()}
       </div>
 
       <div class="settings-section">
@@ -606,25 +620,29 @@ async function renderSettings(app) {
       </div>
 
       <div class="settings-section">
-  <h3>Диагностика</h3>
-  <div class="settings-item">
-    <span class="settings-item-label">Версия приложения</span>
-    <span class="settings-item-value">${APP_VERSION}</span>
-  </div>
-  <div class="settings-item">
-    <span class="settings-item-label">Версия данных</span>
-    <span class="settings-item-value">${version ? (version.reference || '0') : '—'}</span>
-  </div>
-  <button class="btn btn-primary" style="margin-top:12px;" onclick="forcePingCheck()">📡 Проверить API сейчас</button>
-  <button class="btn btn-secondary" style="margin-top:8px;" onclick="showDiagnostics()">🔍 Диагностика</button>
-</div>
+        <h3>Диагностика</h3>
+        <div class="settings-item">
+          <span class="settings-item-label">Версия приложения</span>
+          <span class="settings-item-value">${APP_VERSION}</span>
+        </div>
+        <div class="settings-item">
+          <span class="settings-item-label">Версия данных</span>
+          <span class="settings-item-value">${version ? (version.reference || '0') : '—'}</span>
+        </div>
+        <button class="btn btn-primary" style="margin-top:12px;" onclick="forcePingCheck()">📡 Проверить API сейчас</button>
+        <button class="btn btn-secondary" style="margin-top:8px;" onclick="showDiagnostics()">🔍 Диагностика</button>
+      </div>
 
       <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
       <div class="app-version">Осмотры квартир · v${APP_VERSION}<br>Работает офлайн</div>
     </div>
   `;
-}
 
+  setTimeout(() => {
+    renderVisitPreviewModal();
+    renderPhotoLightbox();
+  }, 0);
+}
 async function openNameChange() {
   state.nameMode = 'change';
   state.screen = 'name';
@@ -772,6 +790,10 @@ function renderVisits(app) {
       <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
     </div>
   `;
+  setTimeout(() => {
+    renderVisitPreviewModal();
+    renderPhotoLightbox();
+  }, 0);
 }
 
 function renderVisitCard(v) {
@@ -1049,12 +1071,27 @@ function renderQueue(app) {
         } else {
           statusText = v.status;
         }
+                const remarksList = buildVisitRemarksList(v);
+        const photoCount = countVisitPhotos(v);
         return `
           <div class="object-card">
             <div class="object-title">Квартира ${escapeHtml(kv)}</div>
             <p style="font-size:14px;color:#5f6368;margin-bottom:8px;">${escapeHtml(when)}</p>
             <p style="font-size:14px;color:${v.status === 'error' ? '#c5221f' : '#5f6368'};">${escapeHtml(statusText)}</p>
-            <button class="btn btn-secondary" style="margin-top:8px;" onclick="deleteQueuedVisit('${escapeAttr(v.clientId)}')">🗑 Удалить из очереди</button>
+            <p style="font-size:13px;color:#5f6368;margin:8px 0;">📷 Фото: ${photoCount}</p>
+            ${remarksList.length ? `
+              <div style="font-size:13px;color:#202124;margin:8px 0;">
+                <strong>Замечания:</strong>
+                <ul style="margin:4px 0 0 16px;padding:0;">
+                  ${remarksList.map(r => `<li>${escapeHtml(r)}</li>`).join('')}
+                </ul>
+              </div>
+            ` : ''}
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
+              <button class="btn btn-secondary" onclick="showVisitPreview('${escapeAttr(v.clientId)}')">👁 Посмотреть</button>
+              ${navigator.onLine ? `<button class="btn btn-secondary" onclick="sendVisitNow('${escapeAttr(v.clientId)}')">📤 Отправить этот</button>` : ''}
+              <button class="btn btn-secondary" onclick="resetVisitAttempts('${escapeAttr(v.clientId)}')">🔄 Сбросить</button>
+            </div>
           </div>
         `;
       }).join('')
@@ -1066,11 +1103,26 @@ function renderQueue(app) {
         <p>Всего в очереди: ${pending.length}</p>
       </div>
       ${itemsHtml}
-      ${pending.length ? `<button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="resetAttemptsNow()">🔄 Сбросить попытки</button>` : ''}
+            ${pending.length ? `<button class="btn btn-primary btn-large" style="margin-top:16px;" onclick="resetAttemptsNow()">🔄 Сбросить все попытки</button>` : ''}
       ${pending.length && navigator.onLine ? `<button class="btn btn-primary btn-large" style="margin-top:8px;" onclick="syncAllNow()">📤 Отправить всё сейчас</button>` : ''}
+      ${pending.length ? `
+        <hr style="margin:16px 0;border:none;border-top:1px solid #e0e0e0;">
+        <button class="btn btn-primary btn-large" id="queueBackupBtnQueue"
+                onclick="uploadQueueToDrive()"
+                ${state.queueBackupBusy ? 'disabled' : ''}>
+          📤 Не отправляется? Нажмите сюда
+        </button>
+        <div style="font-size:12px;color:#5f6368;margin-top:6px;">Копия уйдёт в облако</div>
+        ${state.queueBackupMsg ? `<div class="update-info ${state.queueBackupMsg.type === 'error' ? 'error' : 'ok'}" style="margin-top:8px;">${escapeHtml(state.queueBackupMsg.text)}</div>` : ''}
+        ${renderQueueBackupStatus()}
+      ` : ''}
       <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
     </div>
   `;
+  setTimeout(() => {
+    renderVisitPreviewModal();
+    renderPhotoLightbox();
+  }, 0);
 }
 
 async function resetAttemptsNow() {
@@ -2279,3 +2331,400 @@ window.forcePingCheck = forcePingCheck;
 window.startBannerLongPress = startBannerLongPress;
 window.cancelBannerLongPress = cancelBannerLongPress;
 window.showPingDiagnostics = showPingDiagnostics;
+// ================= ОЧЕРЕДЬ: вспомогательные =================
+
+function buildVisitRemarksList(visit) {
+  const results = (visit.payload && visit.payload.results) || {};
+  const lines = [];
+
+  Object.keys(results).sort().forEach(stateKey => {
+    const rs = results[stateKey] || {};
+    const objName = stateKeyToRusName(stateKey);
+    const parts = [];
+
+    if (rs.noIssues) {
+      parts.push('замечаний нет');
+    } else {
+      (rs.selected || []).forEach(variant => {
+        const vol = (rs.volumes || {})[variant];
+        if (vol && vol.value) {
+          parts.push(variant + ' (' + vol.value + (vol.unit ? ' ' + vol.unit : '') + ')');
+        } else {
+          parts.push(variant);
+        }
+      });
+      if (rs.custom && String(rs.custom).trim()) {
+        parts.push(String(rs.custom).trim());
+      }
+    }
+
+    if (parts.length) {
+      lines.push(objName + ': ' + parts.join(', '));
+    }
+  });
+
+  return lines;
+}
+
+function countVisitPhotos(visit) {
+  const results = (visit.payload && visit.payload.results) || {};
+  let n = 0;
+  Object.keys(results).forEach(stateKey => {
+    const rs = results[stateKey] || {};
+    if (Array.isArray(rs.commonPhotos)) n += rs.commonPhotos.length;
+    if (rs.photosByVariant) {
+      Object.keys(rs.photosByVariant).forEach(v => {
+        n += (rs.photosByVariant[v] || []).length;
+      });
+    }
+  });
+  const extra = (visit.payload && visit.payload.extraPhotos) || [];
+  n += extra.length;
+  return n;
+}
+
+// ================= СТАТУС ПОСЛЕДНЕЙ КОПИИ =================
+
+function renderQueueBackupStatus() {
+  if (!state.queueStats.pendingVisits) return '';
+  const meta = state.queueStats.lastQueueBackupAt;
+  if (!meta) {
+    return `<div style="font-size:12px;color:#5f6368;margin-top:8px;">Последняя копия: никогда</div>`;
+  }
+  try {
+    const dt = new Date(meta);
+    const s = dt.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return `<div style="font-size:12px;color:#5f6368;margin-top:8px;">Последняя копия: ${escapeHtml(s)}</div>`;
+  } catch (e) {
+    return '';
+  }
+}
+
+// ================= ЗАГРУЗКА ОЧЕРЕДИ В ОБЛАКО =================
+
+async function uploadQueueToDrive() {
+  if (state.queueBackupBusy) return;
+  if (!navigator.onLine) {
+    state.queueBackupMsg = { type: 'error', text: 'Нет интернета. Копия уйдёт, когда появится связь.' };
+    render();
+    return;
+  }
+
+  const pending = (state.queueList && state.queueList.length)
+    ? state.queueList.filter(v => v.status !== 'synced')
+    : await window.db.getPendingVisits();
+
+  if (!pending.length) {
+    state.queueBackupMsg = { type: 'error', text: 'Очередь пуста — сохранять нечего.' };
+    render();
+    return;
+  }
+
+  state.queueBackupBusy = true;
+  state.queueBackupMsg = { type: '', text: 'Сохраняем копию в облако…' };
+  render();
+
+  try {
+    const payload = {
+      version: APP_VERSION,
+      userName: state.user.name || 'осмотрщик',
+      savedAt: new Date().toISOString(),
+      pendingCount: pending.length,
+      visits: pending.map(v => ({
+        clientId: v.clientId,
+        createdAt: v.createdAt,
+        status: v.status,
+        attempts: v.attempts || 0,
+        lastError: v.lastError || '',
+        payload: v.payload
+      }))
+    };
+
+    const res = await postApiRaw('uploadQueueBackup', payload);
+    const data = (res && res.data) ? res.data : res;
+
+    if (!data || data.ok === false) {
+      throw new Error((data && data.error) || 'Сервер вернул ошибку');
+    }
+
+    await window.db.setMeta('lastQueueBackupAt', new Date().toISOString());
+    state.queueBackupMsg = { type: 'ok', text: '✅ Сохранено в облако: ' + (data.fileName || 'файл') };
+
+    await refreshQueueStats();
+  } catch (err) {
+    state.queueBackupMsg = { type: 'error', text: 'Ошибка: ' + (err.message || err) };
+  }
+
+  state.queueBackupBusy = false;
+  render();
+}
+
+async function postApiRaw(action, payload) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: action, payload: payload }),
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const text = await response.text();
+    return parseResponse(text);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// ================= АВТО-ЗАГРУЗКА =================
+
+async function maybeAutoBackupQueue() {
+  if (!navigator.onLine) return;
+  if (document.visibilityState !== 'visible') return;
+
+  try {
+    const stats = await window.db.getQueueStats();
+    if (!stats.pendingVisits) return;
+
+    const lastAt = await window.db.getMeta('lastQueueBackupAt');
+    const lastMs = lastAt ? new Date(lastAt).getTime() : 0;
+    const now = new Date();
+    const hour = now.getHours();
+    const hoursSince = lastMs ? (Date.now() - lastMs) / (60 * 60 * 1000) : Infinity;
+
+    const shouldRun =
+      (hour >= 18 && hoursSince >= 20) ||
+      (hoursSince >= 26);
+
+    if (!shouldRun) return;
+
+    console.log('[auto backup] Запускаем автоматическую загрузку очереди');
+    state.queueList = await window.db.getAllVisits();
+    await uploadQueueToDrive();
+  } catch (e) {
+    console.warn('[auto backup]', e.message);
+  }
+}
+
+// ================= ПРОСМОТР ОСМОТРА (модалка) =================
+
+async function showVisitPreview(clientId) {
+  const visit = await window.db.getVisit(clientId);
+  if (!visit) return;
+
+  const photos = await window.db.getPhotosForVisit(clientId);
+  const fresh = photos.map(p => {
+    let url = '';
+    try {
+      if (p.blob) url = URL.createObjectURL(p.blob);
+      else if (p.localUrl) url = p.localUrl;
+    } catch (e) {}
+    return Object.assign({}, p, { freshUrl: url });
+  });
+
+  state.visitPreview = { visit: visit, photos: fresh };
+  renderVisitPreviewModal();
+}
+
+function closeVisitPreview() {
+  const preview = state.visitPreview;
+  if (preview && preview.photos) {
+    preview.photos.forEach(p => {
+      if (p.freshUrl && p.freshUrl.indexOf('blob:') === 0) {
+        try { URL.revokeObjectURL(p.freshUrl); } catch (e) {}
+      }
+    });
+  }
+  state.visitPreview = null;
+  const el = document.getElementById('visitPreviewBackdrop');
+  if (el) el.remove();
+}
+
+function renderVisitPreviewModal() {
+  const existing = document.getElementById('visitPreviewBackdrop');
+  if (existing) existing.remove();
+
+  const preview = state.visitPreview;
+  if (!preview) return;
+
+  const v = preview.visit;
+  const kv = (v.payload && v.payload.kvNumber) || '—';
+  const userName = (v.payload && v.payload.email) || '—';
+  const created = v.createdAt ? new Date(v.createdAt).toLocaleString('ru-RU') : '—';
+  const visited = (v.payload && v.payload.visitedAt)
+    ? new Date(v.payload.visitedAt).toLocaleString('ru-RU') : '—';
+
+  let statusText = 'В очереди';
+  if (v.status === 'error') statusText = 'Ошибка (попыток: ' + (v.attempts || 0) + '): ' + (v.lastError || '');
+  else if (v.status === 'syncing') statusText = 'Отправляется';
+  else if (v.status === 'pending') statusText = 'Ожидает отправки';
+
+  const results = (v.payload && v.payload.results) || {};
+  const comments = (v.payload && v.payload.comments) || '';
+
+  const photosByState = {};
+  preview.photos.forEach(p => {
+    if (!photosByState[p.stateKey]) photosByState[p.stateKey] = { common: [], variants: {} };
+    if (!p.variantKey) {
+      photosByState[p.stateKey].common.push(p);
+    } else {
+      if (!photosByState[p.stateKey].variants[p.variantKey]) photosByState[p.stateKey].variants[p.variantKey] = [];
+      photosByState[p.stateKey].variants[p.variantKey].push(p);
+    }
+  });
+
+  const stateKeys = Object.keys(results).sort();
+
+  const blocksHtml = stateKeys.map(stateKey => {
+    const rs = results[stateKey] || {};
+    const objName = stateKeyToRusName(stateKey);
+    const ph = photosByState[stateKey] || { common: [], variants: {} };
+
+    const remarks = [];
+    if (rs.noIssues) {
+      remarks.push('Замечаний нет');
+    } else {
+      (rs.selected || []).forEach(variant => {
+        const vol = (rs.volumes || {})[variant];
+        if (vol && vol.value) {
+          remarks.push(variant + ' (' + vol.value + (vol.unit ? ' ' + vol.unit : '') + ')');
+        } else {
+          remarks.push(variant);
+        }
+      });
+      if (rs.custom && String(rs.custom).trim()) {
+        remarks.push(String(rs.custom).trim());
+      }
+    }
+
+    const renderThumb = (p) => p.freshUrl
+      ? `<img src="${escapeAttr(p.freshUrl)}" class="preview-thumb"
+              onclick="openPhotoLightbox('${escapeAttr(p.freshUrl)}')">`
+      : `<div class="preview-thumb-missing">нет превью</div>`;
+
+    const commonHtml = ph.common.length
+      ? `<div class="preview-photo-row"><span class="preview-photo-label">Общий вид:</span>
+           <div class="preview-photo-list">${ph.common.map(renderThumb).join('')}</div></div>`
+      : '';
+
+    const variantsHtml = Object.keys(ph.variants).map(variant => {
+      const arr = ph.variants[variant];
+      if (!arr.length) return '';
+      return `<div class="preview-photo-row"><span class="preview-photo-label">${escapeHtml(variant)}:</span>
+        <div class="preview-photo-list">${arr.map(renderThumb).join('')}</div></div>`;
+    }).join('');
+
+    const photosHtml = (commonHtml || variantsHtml)
+      ? `<div class="preview-photos">${commonHtml}${variantsHtml}</div>`
+      : '';
+
+    return `
+      <div class="preview-block">
+        <div class="preview-block-title">${escapeHtml(objName)}</div>
+        <div class="preview-block-remarks">
+          ${remarks.length ? remarks.map(r => escapeHtml(r)).join('<br>') : '—'}
+        </div>
+        ${photosHtml}
+      </div>
+    `;
+  }).join('');
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'visitPreviewBackdrop';
+  backdrop.className = 'modal-backdrop';
+  backdrop.onclick = closeVisitPreview;
+  backdrop.innerHTML = `
+    <div class="modal-window preview-window" onclick="event.stopPropagation()">
+      <div class="preview-header">
+        <h2>Квартира ${escapeHtml(kv)}</h2>
+        <button class="preview-close" onclick="closeVisitPreview()">✕</button>
+      </div>
+      <div class="preview-meta">
+        <div>👤 ${escapeHtml(userName)}</div>
+        <div>📅 Создан: ${escapeHtml(created)}</div>
+        <div>📅 Осмотр: ${escapeHtml(visited)}</div>
+        <div class="preview-status">${escapeHtml(statusText)}</div>
+      </div>
+      <div class="preview-content">
+        ${blocksHtml || '<div class="hint">Нет замечаний.</div>'}
+        ${comments ? `<div class="preview-block"><div class="preview-block-title">Комментарий</div><div class="preview-block-remarks">${escapeHtml(comments)}</div></div>` : ''}
+      </div>
+      <button class="btn btn-secondary" onclick="closeVisitPreview()">Закрыть</button>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+}
+
+// ================= ЛАЙТБОКС ФОТО =================
+
+function openPhotoLightbox(url) {
+  state.photoLightbox = { url: url };
+  renderPhotoLightbox();
+}
+
+function closePhotoLightbox() {
+  state.photoLightbox = null;
+  const el = document.getElementById('photoLightboxBackdrop');
+  if (el) el.remove();
+}
+
+function renderPhotoLightbox() {
+  const existing = document.getElementById('photoLightboxBackdrop');
+  if (existing) existing.remove();
+
+  if (!state.photoLightbox) return;
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'photoLightboxBackdrop';
+  backdrop.className = 'modal-backdrop';
+  backdrop.onclick = closePhotoLightbox;
+  backdrop.innerHTML = `
+    <div class="photo-lightbox" onclick="closePhotoLightbox()">
+      <img src="${escapeAttr(state.photoLightbox.url)}">
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+}
+
+// ================= ДЕЙСТВИЯ ИЗ КАРТОЧКИ ОЧЕРЕДИ =================
+
+async function sendVisitNow(clientId) {
+  if (!navigator.onLine) {
+    alert('Нет интернета. Дождитесь подключения.');
+    return;
+  }
+  if (!confirm('Отправить этот осмотр сейчас?')) return;
+
+  try {
+    await window.db.updateVisit(clientId, { attempts: 0, lastAttemptAt: null, status: 'pending', lastError: '' });
+    await refreshQueueStats();
+    await window.sync.syncNow();
+    state.queueList = await window.db.getAllVisits();
+    await refreshQueueStats();
+    render();
+  } catch (err) {
+    alert('Ошибка отправки: ' + (err.message || err));
+  }
+}
+
+async function resetVisitAttempts(clientId) {
+  await window.db.updateVisit(clientId, {
+    attempts: 0,
+    lastAttemptAt: null,
+    status: 'pending',
+    lastError: ''
+  });
+  state.queueList = await window.db.getAllVisits();
+  await refreshQueueStats();
+  render();
+}
+
+// Экспорт для onclick
+window.showVisitPreview = showVisitPreview;
+window.closeVisitPreview = closeVisitPreview;
+window.openPhotoLightbox = openPhotoLightbox;
+window.closePhotoLightbox = closePhotoLightbox;
+window.uploadQueueToDrive = uploadQueueToDrive;
+window.sendVisitNow = sendVisitNow;
+window.resetVisitAttempts = resetVisitAttempts;
