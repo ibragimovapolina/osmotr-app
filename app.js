@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.1.6';
+const APP_VERSION = '1.2.0';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -439,75 +439,75 @@ function renderHome(app) {
     ? `Квартира ${state.pendingDraft.form.kvNumber || '—'}` : '';
   const pending = state.queueStats.pendingVisits || 0;
 
-  const online = navigator.onLine;
-  const apiMeta = state.apiReachable || null;
-  const isBad = apiMeta && apiMeta.ok === false && (Date.now() - apiMeta.at) < 10 * 60 * 1000;
-
-  let bannerBg, bannerColor, bannerIcon, bannerText;
-  if (!online) {
-    bannerBg = '#fce8e6';
-    bannerColor = '#c5221f';
-    bannerIcon = '🔴';
-    bannerText = 'Офлайн — данные сохраняются локально';
-  } else if (isBad) {
-    bannerBg = '#fef7e0';
-    bannerColor = '#b06000';
-    bannerIcon = '🟡';
-    bannerText = 'Сейчас работают только "белые списки" 😔';
-  } else {
-    bannerBg = '#e6f4ea';
-    bannerColor = '#137333';
-    bannerIcon = '🟢';
-    bannerText = 'Онлайн';
-  }
+  // Приветствие
+  const firstName = (state.user.name || '').split(' ')[0] || 'друг';
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
+  const dateCapitalized = dateStr.charAt(0).toUpperCase() + dateStr.slice(1);
 
   app.innerHTML = `
     ${renderSwUpdateBanner()}
 
-    <div class="user-greeting">
-      <div class="avatar">${escapeHtml((state.user.name || '?').charAt(0).toUpperCase())}</div>
-      <div class="email">👤 ${escapeHtml(state.user.name || '—')}</div>
+    <div class="welcome-header">
+      <div class="welcome-greeting">Привет, ${escapeHtml(firstName)} 👋</div>
+      <div class="welcome-date">${escapeHtml(dateCapitalized)}</div>
     </div>
 
-    <div class="card" id="statusBanner"
-         style="padding:12px 16px;background:${bannerBg};border:1px solid ${bannerColor};cursor:pointer;-webkit-user-select:none;user-select:none;"
-         ontouchstart="startBannerLongPress()" ontouchend="cancelBannerLongPress()" ontouchcancel="cancelBannerLongPress()"
-         onmousedown="startBannerLongPress()" onmouseup="cancelBannerLongPress()" onmouseleave="cancelBannerLongPress()">
-      <div style="font-size:14px;color:${bannerColor};">
-        ${bannerIcon} ${bannerText}
-      </div>
-      <div style="font-size:11px;color:${bannerColor};opacity:0.5;margin-top:2px;">
-        Удерживайте для диагностики
-      </div>
+    ${renderStatusLine()}
+
+    <div class="main-actions">
+      <button class="main-action-card green" onclick="startNewVisit()">
+        <div class="icon-big">🏠</div>
+        <div class="action-info">
+          <div class="action-title">Новый<br>осмотр</div>
+        </div>
+      </button>
+      <button class="main-action-card purple" onclick="showVisits()">
+        <div class="icon-big">📋</div>
+        <div class="action-info">
+          <div class="action-title">Мои<br>осмотры</div>
+        </div>
+      </button>
     </div>
 
     ${hasDraft ? `
-    <div class="card" style="background:#fff8e1;border:1px solid #f9ab00;">
-      <h2 style="margin-bottom:8px;">📋 Незавершённый осмотр</h2>
-      <p style="color:#b06000;font-size:14px;">У вас есть сохранённый черновик: ${escapeHtml(draftInfo)}.</p>
-      <button class="btn btn-primary btn-large" style="margin-top:12px;" onclick="continueDraft()">▶ Продолжить черновик</button>
-      <button class="btn btn-secondary" style="margin-top:8px;" onclick="discardDraft()">🗑 Удалить черновик</button>
+    <div class="list-row" onclick="continueDraft()">
+      <div class="list-row-icon yellow">📝</div>
+      <div class="list-row-content">
+        <div class="list-row-title">Продолжить черновик</div>
+        <div class="list-row-subtitle">Квартира ${escapeHtml(state.pendingDraft.form.kvNumber || '—')}</div>
+      </div>
+      <div class="list-row-arrow">›</div>
     </div>` : ''}
 
-    ${pending > 0 ? `
-    <div class="card" style="background:#e8f0fe;border:1px solid #1a73e8;">
-      <h2 style="margin-bottom:8px;">📤 Ожидают отправки: ${pending}</h2>
-      <p style="color:#1a73e8;font-size:14px;">${online && !isBad ? 'Идёт отправка…' : 'Отправятся, как только появится связь.'}</p>
-      <button class="btn btn-primary" style="margin-top:12px;" onclick="showQueue()">📋 Открыть очередь</button>
-      ${online && !isBad ? `<button class="btn btn-secondary" style="margin-top:8px;" onclick="syncAllNow()">🔄 Отправить всё сейчас</button>` : ''}
-    </div>` : `
-    <div class="card" style="background:#e6f4ea;border:1px solid #137333;">
-      <h2 style="margin-bottom:8px;">✅ Все осмотры отправлены</h2>
-      <p style="color:#137333;font-size:14px;">Очередь пуста.</p>
-      <button class="btn btn-secondary" style="margin-top:12px;" onclick="showQueue()">📋 Открыть очередь</button>
-    </div>`}
+    <div class="list-row" onclick="showQueue()">
+      <div class="list-row-icon ${pending > 0 ? 'blue' : 'green'}">
+        ${pending > 0 ? '📤' : '✅'}
+      </div>
+      <div class="list-row-content">
+        <div class="list-row-title">Очередь отправки</div>
+        <div class="list-row-subtitle">${pending > 0 ? pending + ' ' + pluralVisits(pending) + ' ждёт отправки' : 'Всё отправлено'}</div>
+      </div>
+      <div class="list-row-arrow">›</div>
+    </div>
 
-    <div class="card">
-      <button class="btn btn-primary btn-large" onclick="startNewVisit()">🏠 Новый осмотр</button>
-      <button class="btn btn-secondary" onclick="showVisits()">📋 Мои осмотры</button>
-      <button class="btn btn-secondary" onclick="showSettings()">⚙ Настройки</button>
+    <div class="list-row" onclick="showSettings()">
+      <div class="list-row-icon blue">⚙️</div>
+      <div class="list-row-content">
+        <div class="list-row-title">Настройки</div>
+        <div class="list-row-subtitle">Профиль, данные, диагностика</div>
+      </div>
+      <div class="list-row-arrow">›</div>
     </div>
   `;
+}
+
+function pluralVisits(n) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'осмотр';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'осмотра';
+  return 'осмотров';
 }
 
 async function syncAllNow() {
@@ -534,7 +534,32 @@ async function showSettings() {
   render();
   window.scrollTo(0, 0);
 }
+function renderStatusLine() {
+  const online = navigator.onLine;
+  const apiMeta = state.apiReachable || null;
+  const isBad = apiMeta && apiMeta.ok === false && (Date.now() - apiMeta.at) < 10 * 60 * 1000;
 
+  let cls, text;
+  if (!online) {
+    cls = 'offline';
+    text = 'Офлайн — данные сохраняются локально';
+  } else if (isBad) {
+    cls = 'warning';
+    text = 'Работают только белые списки';
+  } else {
+    cls = 'online';
+    text = 'Онлайн';
+  }
+
+  return `
+    <div class="status-line"
+         ontouchstart="startBannerLongPress()" ontouchend="cancelBannerLongPress()" ontouchcancel="cancelBannerLongPress()"
+         onmousedown="startBannerLongPress()" onmouseup="cancelBannerLongPress()" onmouseleave="cancelBannerLongPress()">
+      <span class="status-dot ${cls}"></span>
+      <span class="status-text">${escapeHtml(text)}</span>
+    </div>
+  `;
+}
 async function renderSettings(app) {
   let refCount = 0, photoQueue = 0;
   try {
