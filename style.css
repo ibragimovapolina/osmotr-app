@@ -1146,3 +1146,86 @@ select.field-input {
     flex-direction: column;
   }
 }
+/* ========================================
+   ОБНОВЛЕНИЕ ИКОНОК (стиль Evernote)
+   ======================================== */
+
+/* Иконки в больших карточках главного экрана */
+.main-action-card {
+  padding: 22px 20px;
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.main-action-card .action-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  opacity: 0.95;
+  margin-top: 4px;
+}
+
+.main-action-card .action-icon svg {
+  display: block;
+}
+
+.main-action-card .action-info {
+  margin-top: auto;
+}
+
+.main-action-card .action-title {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.2px;
+}
+
+/* Иконки в строках */
+.list-row-icon svg {
+  display: block;
+  color: var(--text);
+}
+
+.list-row-icon.green svg { color: var(--green-dark); }
+.list-row-icon.purple svg { color: var(--purple-dark); }
+.list-row-icon.blue svg { color: var(--blue); }
+.list-row-icon.yellow svg { color: #8a6200; }
+
+.list-row-arrow svg {
+  display: block;
+  color: var(--text-tertiary);
+}
+
+/* Кнопки-строки (list-row как button) */
+button.list-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  background: var(--card);
+  border-radius: var(--radius-card);
+  margin-bottom: 10px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  box-shadow: var(--shadow-card);
+  color: var(--text);
+  border: none;
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  font-size: 16px;
+}
+
+button.list-row:active {
+  transform: scale(0.99);
+  background: #FAFAFA;
+}
+
+button.list-row + .list-row {
+  margin-top: 0;
+}
