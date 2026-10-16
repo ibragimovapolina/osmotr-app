@@ -423,7 +423,7 @@ async function silentUpdateReference() {
     await setReference(refData);
 
     console.log('[sync] Тянем правила замечаний…');
-    const remRes = await apiGet('getRemarks');
+    const remRes = await apiGet('getRemarksFull');
     const remData = (remRes && remRes.data) ? remRes.data : remRes;
     await setRemarks(remData);
 
