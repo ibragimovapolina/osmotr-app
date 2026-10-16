@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.0.7';
+const APP_VERSION = '1.0.8';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -29,14 +29,13 @@ const state = {
   kvWarning: null,
   settingsMessage: null,
   volumeModal: null,
-  swUpdateAvailable: false     // 🆕 флаг: есть новая версия SW
+  swUpdateAvailable: false
 };
 
 // ================= СТАРТ =================
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
-  // 🆕 Регистрируем SW и следим за обновлениями
   registerServiceWorker();
 
   const savedName = await window.db.getUserName();
@@ -58,13 +57,11 @@ function registerServiceWorker() {
   navigator.serviceWorker.register('./sw.js').then((reg) => {
     console.log('[SW] зарегистрирован, scope:', reg.scope);
 
-    // Если уже есть ожидающий SW (при первом заходе после обновления) — сразу показываем плашку
     if (reg.waiting) {
       state.swUpdateAvailable = true;
       if (state.screen !== 'loading' && state.screen !== 'name') render();
     }
 
-    // Следим за появлением нового SW в будущем
     reg.addEventListener('updatefound', () => {
       const newWorker = reg.installing;
       if (!newWorker) return;
@@ -77,12 +74,10 @@ function registerServiceWorker() {
       });
     });
 
-    // Проверяем обновления каждые 30 минут, пока приложение открыто
     setInterval(() => {
       reg.update().catch(() => {});
     }, 30 * 60 * 1000);
 
-    // Проверяем при возврате в приложение (важно для мобильных)
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         reg.update().catch(() => {});
@@ -93,7 +88,6 @@ function registerServiceWorker() {
   });
 }
 
-// Кнопка «Обновить сейчас» — активируем новый SW и перезагружаем
 function applySwUpdate() {
   if (!('serviceWorker' in navigator)) {
     location.reload();
@@ -207,7 +201,6 @@ function render() {
   if (state.screen === 'settings')    return renderSettings(app);
 }
 
-// 🆕 Плашка обновления приложения
 function renderSwUpdateBanner() {
   if (!state.swUpdateAvailable) return '';
   return `
@@ -517,7 +510,6 @@ async function openNameChange() {
   window.scrollTo(0, 0);
 }
 
-// 🆕 Проверка обновления вручную
 async function checkAndUpdateApp() {
   if (!('serviceWorker' in navigator)) {
     alert('Ваш браузер не поддерживает Service Worker. Откройте приложение заново.');
@@ -535,7 +527,6 @@ async function checkAndUpdateApp() {
     }
 
     await reg.update();
-    // Ждём немного, чтобы установка успела завершиться
     await new Promise(r => setTimeout(r, 1500));
 
     if (reg.waiting) {
@@ -567,6 +558,7 @@ async function updateReferenceNow() {
     const refData = (refRes && refRes.data) ? refRes.data : refRes;
     await window.db.setReference(refData);
 
+    // ⚠️ ВАЖНО: getRemarksFull — новый метод с requireVolume и unit
     const remRes = await apiGet('getRemarksFull');
     const remData = (remRes && remRes.data) ? remRes.data : remRes;
     await window.db.setRemarks(remData);
@@ -997,7 +989,6 @@ async function showDiagnostics() {
     const remCount = remarks ? Object.keys(remarks).length : 0;
     const marksCount = marks ? Object.keys(marks).length : 0;
 
-    // === Анализ формата замечаний ===
     let formatStatus = '—';
     let requireVolumeCount = 0;
     let totalVariants = 0;
@@ -1025,7 +1016,6 @@ async function showDiagnostics() {
         sampleInfo = String(info);
       }
 
-      // Считаем, сколько замечаний требуют объёма
       Object.keys(remarks).forEach(criterion => {
         Object.keys(remarks[criterion] || {}).forEach(variant => {
           totalVariants++;
