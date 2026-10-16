@@ -1,10 +1,10 @@
 // ================= Service Worker =================
 // Кэширует оболочку приложения, чтобы оно открывалось без интернета.
 //
-// ⚠️ При обновлении приложения МЕНЯЙТЕ SW_VERSION (например, '1.0.1').
+// ⚠️ При обновлении приложения МЕНЯЙТЕ SW_VERSION (например, '1.1.2').
 // Это автоматически сбросит старый кэш у всех пользователей.
 
-const SW_VERSION = '1.1.1';
+const SW_VERSION = '1.1.2';
 const CACHE_NAME = 'osmotr-' + SW_VERSION;
 
 // Файлы, которые нужно держать в кэше для офлайн-режима.
@@ -35,9 +35,11 @@ self.addEventListener('install', (event) => {
   console.log('[SW] install, версия', SW_VERSION);
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(PRECACHE_URLS).catch((err) => {
-        console.warn('[SW] Не все файлы закэшированы:', err);
-      });
+      // cache: 'reload' — обходим HTTP-кэш браузера при precache
+      return cache.addAll(PRECACHE_URLS.map(url => new Request(url, { cache: 'reload' })))
+        .catch((err) => {
+          console.warn('[SW] Не все файлы закэшированы:', err);
+        });
     })
   );
   self.skipWaiting();
@@ -58,22 +60,19 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
 
-  // Только GET
   if (req.method !== 'GET') return;
 
-  // Пропускаем сторонние домены и API
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.includes('/api')) return;
 
-  // Определяем, для какого файла применять стратегию «сначала сеть»
   const path = url.pathname.split('/').pop() || 'index.html';
   const isNetworkFirst = NETWORK_FIRST.some(f => f.endsWith(path)) || req.mode === 'navigate';
 
   if (isNetworkFirst) {
-    // Network-first: сеть → кэш
     event.respondWith(
-      fetch(req)
+      // ⚠️ cache: 'reload' — обходим HTTP-кэш браузера, всегда идём в сеть
+      fetch(req, { cache: 'reload' })
         .then((response) => {
           if (response && response.status === 200) {
             const copy = response.clone();
@@ -100,7 +99,6 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(req).then((cached) => {
       if (cached) {
-        // Обновляем кэш в фоне
         fetch(req).then((response) => {
           if (response && response.status === 200) {
             const copy = response.clone();
@@ -126,6 +124,7 @@ self.addEventListener('fetch', (event) => {
     })
   );
 });
+
 // Обработка команды «активировать немедленно» от приложения
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
