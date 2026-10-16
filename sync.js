@@ -1,14 +1,16 @@
-// ================= Движок синхронизации v7 =================
+// ================= Движок синхронизации v8 =================
 // Особенности:
-//   - Проверка доступности API (ping 2.5 сек) перед каждой отправкой.
+//   - Проверка доступности API (ping 7 сек) перед каждой отправкой.
+//   - Не проверяем в фоне (visibilityState !== 'visible').
 //   - Если API недоступен — НЕ тратим попытки, ждём 2 минуты.
 //   - Экспоненциальный backoff между попытками.
 //   - Фото — по одному с паузой.
+//   - Сохраняем детали ping в meta.pingDetail для диагностики.
 
 const SYNC_INTERVAL_OK_MS = 30 * 1000;      // обычная сеть — проверка раз в 30 сек
 const SYNC_INTERVAL_BAD_MS = 2 * 60 * 1000; // плохая сеть — раз в 2 минуты
 const REQUEST_TIMEOUT_MS = 60 * 1000;       // фото/осмотр — 60 сек
-const PING_TIMEOUT_MS = 2500;               // ping — 2.5 сек
+const PING_TIMEOUT_MS = 7000;               // ping — 7 сек (было 2.5)
 const PHOTO_PAUSE_MS = 500;
 
 const RETRY_DELAYS = [
@@ -37,6 +39,15 @@ async function syncNow() {
   try {
     // === ПРОВЕРКА ДОСТУПНОСТИ API ===
     const reachable = await checkApiReachable();
+
+    // null = приложение в фоне, не портим meta, просто откладываем
+    if (reachable === null) {
+      console.log('[sync] приложение в фоне — откладываем');
+      result.skipped = 1;
+      result.reason = 'background';
+      return result;
+    }
+
     await window.db.setMeta('apiReachable', { ok: reachable, at: Date.now() });
 
     if (!reachable) {
@@ -56,9 +67,10 @@ async function syncNow() {
       if (!navigator.onLine) break;
       if (!shouldRetryNow(visit)) { result.skipped++; continue; }
 
-      // Перед каждым осмотром — быстрая проверка связи (если сеть пропала)
+      // Перед каждым осмотром — быстрая проверка связи
       if (result.sent > 0) {
         const stillReachable = await checkApiReachable();
+        if (stillReachable === null) break; // ушли в фон
         await window.db.setMeta('apiReachable', { ok: stillReachable, at: Date.now() });
         if (!stillReachable) {
           console.log('[sync] API пропал в середине. Останавливаемся.');
@@ -92,10 +104,18 @@ async function syncNow() {
   return result;
 }
 
-// Проверка доступности API за 2.5 секунды
+// Проверка доступности API
+// Возвращает: true (ok), false (fail), null (в фоне — не проверяли)
 async function checkApiReachable() {
+  if (document.visibilityState !== 'visible') {
+    return null;
+  }
+
+  const t0 = Date.now();
+  const detail = { at: Date.now(), ok: false, elapsed: 0, status: 0, body: '', error: '' };
+
   try {
-    const url = API_URL + '?action=ping&callback=cb';
+    const url = API_URL + '?action=ping&callback=cb&t=' + Date.now();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PING_TIMEOUT_MS);
     try {
@@ -104,15 +124,41 @@ async function checkApiReachable() {
         signal: controller.signal,
         cache: 'no-store'
       });
-      if (!response.ok) return false;
+      detail.status = response.status;
+      detail.elapsed = Date.now() - t0;
+
+      if (!response.ok) {
+        detail.error = 'HTTP ' + response.status;
+        await savePingDetail(detail);
+        return false;
+      }
       const text = await response.text();
-      return text.indexOf('pong') !== -1;
+      detail.body = String(text).substring(0, 300);
+
+      const lower = detail.body.toLowerCase();
+      const ok = lower.indexOf('pong') !== -1 || lower.indexOf('"ok":true') !== -1;
+      detail.ok = ok;
+      await savePingDetail(detail);
+      console.log('[ping]', ok ? '✅' : '❌', detail.elapsed + 'мс', detail.body.substring(0, 100));
+      return ok;
     } finally {
       clearTimeout(timer);
     }
   } catch (e) {
+    detail.elapsed = Date.now() - t0;
+    detail.error = e.name === 'AbortError' ? 'timeout (' + PING_TIMEOUT_MS + 'мс)' : (e.message || String(e));
+    await savePingDetail(detail);
+    console.warn('[ping] ошибка:', detail.error);
     return false;
   }
+}
+
+async function savePingDetail(detail) {
+  try {
+    if (window.db && window.db.setMeta) {
+      await window.db.setMeta('pingDetail', detail);
+    }
+  } catch (e) {}
 }
 
 function shouldRetryNow(visit) {
@@ -147,7 +193,6 @@ function startAutoSync() {
   window.addEventListener('offline', onOffline);
   document.addEventListener('visibilitychange', onVisibilityChange);
 
-  // Первая попытка — через 1 секунду после старта
   setTimeout(() => {
     if (navigator.onLine) syncNow().catch(() => {});
   }, 1000);
@@ -158,7 +203,6 @@ function startAutoSync() {
 function scheduleNext() {
   if (_syncTimer) { clearTimeout(_syncTimer); _syncTimer = null; }
 
-  // Смотрим, доступен ли API в последней проверке
   window.db.getMeta('apiReachable').then(meta => {
     const isBad = meta && !meta.ok && (Date.now() - meta.at) < 10 * 60 * 1000;
     const interval = isBad ? SYNC_INTERVAL_BAD_MS : SYNC_INTERVAL_OK_MS;
@@ -187,7 +231,6 @@ function stopAutoSync() {
 
 function onOnline() {
   console.log('[sync] Сеть появилась — пробуем отправить');
-  // Сразу проверим и попробуем
   setTimeout(async () => {
     try { await syncNow(); } catch (e) {}
     scheduleNext();
