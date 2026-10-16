@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.1.1';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -424,11 +424,17 @@ function renderHome(app) {
       <div class="email">👤 ${escapeHtml(state.user.name || '—')}</div>
     </div>
 
-    <div class="card" style="padding:12px 16px;background:${bannerBg};border:1px solid ${bannerColor};">
-      <div style="font-size:14px;color:${bannerColor};">
-        ${bannerIcon} ${bannerText}
-      </div>
-    </div>
+  <div class="card" id="statusBanner"
+     style="padding:12px 16px;background:${bannerBg};border:1px solid ${bannerColor};cursor:pointer;-webkit-user-select:none;user-select:none;"
+     ontouchstart="startBannerLongPress()" ontouchend="cancelBannerLongPress()" ontouchcancel="cancelBannerLongPress()"
+     onmousedown="startBannerLongPress()" onmouseup="cancelBannerLongPress()" onmouseleave="cancelBannerLongPress()">
+  <div style="font-size:14px;color:${bannerColor};">
+    ${bannerIcon} ${bannerText}
+  </div>
+  <div style="font-size:11px;color:${bannerColor};opacity:0.5;margin-top:2px;">
+    Удерживайте для диагностики
+  </div>
+</div>
 
     ${hasDraft ? `
     <div class="card" style="background:#fff8e1;border:1px solid #f9ab00;">
@@ -544,17 +550,18 @@ async function renderSettings(app) {
       </div>
 
       <div class="settings-section">
-        <h3>Диагностика</h3>
-        <div class="settings-item">
-          <span class="settings-item-label">Версия приложения</span>
-          <span class="settings-item-value">${APP_VERSION}</span>
-        </div>
-        <div class="settings-item">
-          <span class="settings-item-label">Версия данных</span>
-          <span class="settings-item-value">${version ? (version.reference || '0') : '—'}</span>
-        </div>
-        <button class="btn btn-secondary" style="margin-top:12px;" onclick="showDiagnostics()">🔍 Диагностика</button>
-      </div>
+  <h3>Диагностика</h3>
+  <div class="settings-item">
+    <span class="settings-item-label">Версия приложения</span>
+    <span class="settings-item-value">${APP_VERSION}</span>
+  </div>
+  <div class="settings-item">
+    <span class="settings-item-label">Версия данных</span>
+    <span class="settings-item-value">${version ? (version.reference || '0') : '—'}</span>
+  </div>
+  <button class="btn btn-primary" style="margin-top:12px;" onclick="forcePingCheck()">📡 Проверить API сейчас</button>
+  <button class="btn btn-secondary" style="margin-top:8px;" onclick="showDiagnostics()">🔍 Диагностика</button>
+</div>
 
       <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
       <div class="app-version">Осмотры квартир · v${APP_VERSION}<br>Работает офлайн</div>
@@ -2115,3 +2122,104 @@ function escapeAttr(str) {
 function cssEscape(str) {
   return String(str).replace(/[^a-zA-Z0-9_\-\.]/g, '\\$&');
 }
+// ================= ДИАГНОСТИКА API =================
+
+async function forcePingCheck() {
+  const t0 = Date.now();
+  let detail = { at: Date.now(), ok: false, elapsed: 0, status: 0, body: '', error: '' };
+
+  try {
+    const url = API_URL + '?action=ping&callback=cb&t=' + Date.now();
+    const r = await fetch(url, { cache: 'no-store' });
+    detail.status = r.status;
+    detail.elapsed = Date.now() - t0;
+
+    if (!r.ok) {
+      detail.error = 'HTTP ' + r.status;
+    } else {
+      const text = await r.text();
+      detail.body = String(text).substring(0, 300);
+      const lower = detail.body.toLowerCase();
+      detail.ok = lower.indexOf('pong') !== -1 || lower.indexOf('"ok":true') !== -1;
+    }
+  } catch (e) {
+    detail.elapsed = Date.now() - t0;
+    detail.error = e.name === 'AbortError' ? 'timeout' : (e.message || String(e));
+  }
+
+  // Обновляем meta
+  try {
+    await window.db.setMeta('apiReachable', { ok: detail.ok, at: Date.now() });
+    await window.db.setMeta('pingDetail', detail);
+  } catch (e) {}
+
+  state.apiReachable = { ok: detail.ok, at: Date.now() };
+
+  const lines = [
+    '📡 Проверка API',
+    '',
+    'Результат: ' + (detail.ok ? '✅ ok' : '❌ fail'),
+    'HTTP статус: ' + (detail.status || '—'),
+    'Время: ' + detail.elapsed + ' мс',
+    'Ошибка: ' + (detail.error || '—'),
+    '',
+    'Тело ответа (первые 300):',
+    detail.body || '(пусто)',
+    '',
+    'Сеть: ' + (navigator.onLine ? 'онлайн' : 'офлайн'),
+    'visibilityState: ' + document.visibilityState,
+    'Соединение: ' + (navigator.connection ? (navigator.connection.effectiveType || '?') : '?')
+  ];
+
+  alert(lines.join('\n'));
+  render();
+}
+
+// Долгий тап по плашке статуса → диагностика
+let _bannerTimer = null;
+
+function startBannerLongPress() {
+  _bannerTimer = setTimeout(() => {
+    _bannerTimer = null;
+    showPingDiagnostics();
+  }, 600);
+}
+
+function cancelBannerLongPress() {
+  if (_bannerTimer) {
+    clearTimeout(_bannerTimer);
+    _bannerTimer = null;
+  }
+}
+
+async function showPingDiagnostics() {
+  const detail = (await window.db.getMeta('pingDetail')) || {};
+  const apiMeta = state.apiReachable || {};
+  const metaAge = apiMeta.at ? Math.round((Date.now() - apiMeta.at) / 1000) + ' сек назад' : '—';
+
+  const lines = [
+    '🔍 Диагностика плашки',
+    '',
+    'Сеть: ' + (navigator.onLine ? 'онлайн' : 'офлайн'),
+    'visibilityState: ' + document.visibilityState,
+    'Соединение: ' + (navigator.connection ? (navigator.connection.effectiveType || '?') : '?'),
+    '',
+    'Последняя проверка API:',
+    '  Результат: ' + (apiMeta.ok === true ? '✅ ok' : apiMeta.ok === false ? '❌ fail' : '—'),
+    '  Когда: ' + metaAge,
+    '',
+    'Детали ping:',
+    '  HTTP статус: ' + (detail.status || '—'),
+    '  Время: ' + (detail.elapsed ? detail.elapsed + ' мс' : '—'),
+    '  Ошибка: ' + (detail.error || '—'),
+    '  Тело: ' + (detail.body ? detail.body.substring(0, 200) : '—')
+  ];
+
+  alert(lines.join('\n'));
+}
+
+// Экспорт для onclick
+window.forcePingCheck = forcePingCheck;
+window.startBannerLongPress = startBannerLongPress;
+window.cancelBannerLongPress = cancelBannerLongPress;
+window.showPingDiagnostics = showPingDiagnostics;
