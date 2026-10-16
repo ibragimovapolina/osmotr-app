@@ -167,6 +167,18 @@ p {
   border-color: #1a73e8;
 }
 
+/* ============ ВЫПАДАЮЩИЙ СПИСОК (ФИЛЬТР) ============ */
+select.field-input {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=US-ASCII,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2212%22%20height%3D%228%22%20viewBox%3D%220%200%2012%208%22%3E%3Cpath%20fill%3D%22%235f6368%22%20d%3D%22M1.41%200L6%204.59%2010.59%200%2012%201.41l-6%206-6-6z%22%2F%3E%3C%2Fsvg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+  cursor: pointer;
+  font-size: 15px;
+}
+
 .hint {
   color: #5f6368;
   font-size: 14px;
@@ -276,6 +288,34 @@ p {
   color: #fff;
 }
 
+/* ============ ЧИП + ПЛАШКА ОБЪЁМА ============ */
+.chip-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: 4px;
+  margin-bottom: 4px;
+  position: relative;
+  flex-wrap: wrap;
+}
+
+.volume-badge {
+  display: inline-block;
+  background: #e6f4ea;
+  color: #137333;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 12px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.volume-badge:active {
+  opacity: 0.7;
+}
+
 /* ============ СВОЁ ЗАМЕЧАНИЕ ============ */
 .custom-input {
   width: 100%;
@@ -295,7 +335,7 @@ p {
   border-color: #1a73e8;
 }
 
-/* ============ ФОТО ============ */
+/* ============ ФОТО (ФОРМА) ============ */
 .photo-block {
   margin-top: 8px;
 }
@@ -392,6 +432,30 @@ p {
   background: #e8f0fe;
 }
 
+/* ============ СЕКЦИИ ФОТО (ФОРМА) ============ */
+.photo-sections {
+  margin-top: 12px;
+}
+
+.photo-section {
+  background: #f8f9fa;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.photo-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #5f6368;
+  margin-bottom: 8px;
+  word-wrap: break-word;
+}
+
+.photo-section .photo-list {
+  margin-bottom: 8px;
+}
+
 /* ============ ОШИБКИ ============ */
 .obj-error {
   background: #fce8e6;
@@ -419,6 +483,7 @@ p {
   margin-bottom: 16px;
   text-align: center;
 }
+
 /* ============ СПИСОК ОСМОТРОВ ============ */
 .visits-filter {
   display: flex;
@@ -537,6 +602,7 @@ p {
 .kv-warning strong {
   color: #8a4a00;
 }
+
 /* ============ НАСТРОЙКИ ============ */
 .settings-section {
   margin-bottom: 24px;
@@ -602,35 +668,8 @@ p {
   border-color: #ea4335;
   color: #c5221f;
 }
-/* ============ ЧИП + ПЛАШКА ОБЪЁМА ============ */
-.chip-wrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-right: 4px;
-  margin-bottom: 4px;
-  position: relative;
-  flex-wrap: wrap;
-}
 
-.volume-badge {
-  display: inline-block;
-  background: #e6f4ea;
-  color: #137333;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 12px;
-  cursor: pointer;
-  user-select: none;
-  white-space: nowrap;
-}
-
-.volume-badge:active {
-  opacity: 0.7;
-}
-
-/* ============ МОДАЛЬНОЕ ОКНО ============ */
+/* ============ МОДАЛЬНОЕ ОКНО (общее для всех) ============ */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -707,29 +746,7 @@ p {
   padding: 14px 16px;
   font-size: 16px;
 }
-/* ============ СЕКЦИИ ФОТО ============ */
-.photo-sections {
-  margin-top: 12px;
-}
 
-.photo-section {
-  background: #f8f9fa;
-  border-radius: 10px;
-  padding: 10px 12px;
-  margin-bottom: 10px;
-}
-
-.photo-section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #5f6368;
-  margin-bottom: 8px;
-  word-wrap: break-word;
-}
-
-.photo-section .photo-list {
-  margin-bottom: 8px;
-}
 /* ============ КОМПАКТНОЕ МОДАЛЬНОЕ ОКНО ОБЪЁМА ============ */
 .modal-window.compact {
   max-width: 320px;
@@ -797,17 +814,8 @@ p {
   padding: 10px 12px;
   font-size: 15px;
 }
-/* Модалки */
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.5);
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 12px;
-}
+
+/* ============ МОДАЛКА ПРОСМОТРА ОСМОТРА ============ */
 .preview-window {
   background: #fff;
   border-radius: 12px;
@@ -817,61 +825,92 @@ p {
   overflow-y: auto;
   padding: 16px;
 }
+
 .preview-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
 }
-.preview-header h2 { margin: 0; font-size: 18px; }
+
+.preview-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
 .preview-close {
   background: none;
   border: none;
   font-size: 22px;
   cursor: pointer;
   padding: 4px 8px;
+  color: #5f6368;
 }
+
 .preview-meta {
   font-size: 13px;
   color: #5f6368;
   margin-bottom: 12px;
 }
-.preview-meta > div { margin-bottom: 4px; }
-.preview-status { color: #1a73e8; font-weight: 500; }
-.preview-content { margin-bottom: 12px; }
+
+.preview-meta > div {
+  margin-bottom: 4px;
+}
+
+.preview-status {
+  color: #1a73e8;
+  font-weight: 500;
+}
+
+.preview-content {
+  margin-bottom: 12px;
+}
+
 .preview-block {
   border-top: 1px solid #e0e0e0;
   padding: 10px 0;
 }
-.preview-block:first-child { border-top: none; }
+
+.preview-block:first-child {
+  border-top: none;
+}
+
 .preview-block-title {
   font-weight: 600;
   font-size: 14px;
   margin-bottom: 4px;
 }
+
 .preview-block-remarks {
   font-size: 13px;
   color: #202124;
   margin-bottom: 6px;
 }
-.preview-photos { margin-top: 6px; }
+
+.preview-photos {
+  margin-top: 6px;
+}
+
 .preview-photo-row {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   margin-bottom: 6px;
 }
+
 .preview-photo-label {
   font-size: 12px;
   color: #5f6368;
   min-width: 90px;
   padding-top: 4px;
 }
+
 .preview-photo-list {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
+
 .preview-thumb {
   width: 72px;
   height: 72px;
@@ -880,6 +919,7 @@ p {
   border: 1px solid #e0e0e0;
   cursor: pointer;
 }
+
 .preview-thumb-missing {
   width: 72px;
   height: 72px;
@@ -891,6 +931,8 @@ p {
   font-size: 10px;
   color: #9aa0a6;
 }
+
+/* ============ ЛАЙТБОКС ФОТО (увеличение) ============ */
 .photo-lightbox {
   background: #000;
   padding: 12px;
@@ -898,6 +940,7 @@ p {
   max-width: 95vw;
   max-height: 95vh;
 }
+
 .photo-lightbox img {
   max-width: 90vw;
   max-height: 90vh;
