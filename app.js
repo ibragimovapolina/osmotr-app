@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.2.4';
+const APP_VERSION = '1.2.5';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1576,7 +1576,7 @@ function renderObjectCard(divKey, obj) {
 
   const noIssuesHtml = `<button type="button"
     class="chip chip-no-issues ${objState.noIssues ? 'chip-selected' : ''}"
-    onclick="toggleNoIssues('${escapeAttr(stateKey)}')">Замечаний нет</button>`;
+    onclick="toggleNoIssues('${escapeAttr(stateKey)}')">✓ Замечаний нет</button>`;
 
   const customHtml = `<textarea class="custom-input" rows="2" placeholder="Своё замечание (если нужно)"
     oninput="onCustomInput('${escapeAttr(stateKey)}', this.value)">${escapeHtml(objState.custom || '')}</textarea>`;
@@ -1595,7 +1595,6 @@ function renderObjectCard(divKey, obj) {
     </div>
   `;
 }
-
 function buildPhotoSections(stateKey, objState) {
   const sections = [];
 
@@ -1641,7 +1640,7 @@ function renderPhotoSection(stateKey, variantKey, title, photos, uploading) {
 
   return `
     <div class="photo-section" data-section="${escapeAttr(stateKey)}::${escapeAttr(variantKey)}">
-      <div class="photo-section-title">📷 ${escapeHtml(title)}</div>
+      <div class="photo-section-title">${escapeHtml(title)}</div>
       <div class="photo-list">${photoItemsHtml}${uploadingHtml}</div>
       <label class="photo-add-label">
         <input type="file" accept="image/*" multiple style="display:none"
