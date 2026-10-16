@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.1.2';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -93,7 +93,7 @@ function registerServiceWorker() {
 // 🆕 Исправленный механизм обновления
 function applySwUpdate() {
   if (!('serviceWorker' in navigator)) {
-    location.reload();
+    hardReload();
     return;
   }
 
@@ -101,7 +101,7 @@ function applySwUpdate() {
   const doReload = () => {
     if (reloaded) return;
     reloaded = true;
-    location.reload();
+    hardReload();
   };
 
   // Слушаем смену контроллера — когда новый SW активируется, страница перезагрузится
@@ -109,16 +109,38 @@ function applySwUpdate() {
 
   navigator.serviceWorker.getRegistration().then((reg) => {
     if (reg && reg.waiting) {
-      // Просим новый SW активироваться немедленно
+      console.log('[SW] Отправляем SKIP_WAITING');
       reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+    } else if (reg && reg.installing) {
+      console.log('[SW] Новый SW ещё устанавливается, ждём…');
+      reg.installing.addEventListener('statechange', (e) => {
+        if (e.target.state === 'installed') {
+          e.target.postMessage({ type: 'SKIP_WAITING' });
+        }
+      });
     } else {
+      // Нет waiting/installing — возможно, обновилось в фоне
+      console.log('[SW] Нет waiting — перезагружаемся');
       setTimeout(doReload, 200);
     }
-    // Страховка: если через 3 секунды ничего не произошло — перезагружаем
+    // Страховка: если через 3 сек ничего не произошло — жёсткая перезагрузка
     setTimeout(doReload, 3000);
   }).catch(() => {
     doReload();
   });
+}
+
+// Жёсткая перезагрузка: обходит HTTP-кэш браузера через query-параметр
+function hardReload() {
+  try {
+    const url = new URL(location.href);
+    url.searchParams.set('_r', Date.now());
+    console.log('[SW] Hard reload →', url.toString());
+    location.replace(url.toString());
+  } catch (e) {
+    // Фолбэк
+    location.reload();
+  }
 }
 
 // ================= ПРОДОЛЖЕНИЕ СТАРТА =================
