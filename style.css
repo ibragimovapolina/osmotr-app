@@ -209,17 +209,18 @@ p {
 .main-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 12px;
-  margin-bottom: 20px;
+  gap: 10px;
+  margin-bottom: 18px;
 }
 
 .main-action-card {
   border-radius: var(--radius-card);
-  padding: 22px 18px;
-  min-height: 140px;
+  padding: 20px 18px;
+  min-height: 88px;
   display: flex;
-  flex-direction: column;
-  justify-content: space-between;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
   cursor: pointer;
   transition: transform 0.15s, box-shadow 0.15s;
   border: none;
@@ -242,35 +243,39 @@ p {
   background: var(--purple);
 }
 
-.main-action-card .icon-big {
-  font-size: 32px;
-  line-height: 1;
-  margin-bottom: 20px;
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.15));
+.main-action-card .action-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  opacity: 0.95;
+  flex-shrink: 0;
+}
+
+.main-action-card .action-icon svg {
+  display: block;
+}
+
+.main-action-card .action-info {
+  flex: 1;
+  min-width: 0;
 }
 
 .main-action-card .action-title {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
   line-height: 1.2;
   letter-spacing: -0.2px;
-}
-
-.main-action-card .action-subtitle {
-  font-size: 13px;
-  opacity: 0.8;
-  margin-top: 4px;
-  font-weight: 500;
 }
 
 /* Декоративный круг внутри карточки */
 .main-action-card::after {
   content: '';
   position: absolute;
-  right: -30px;
-  bottom: -30px;
-  width: 100px;
-  height: 100px;
+  right: -25px;
+  bottom: -25px;
+  width: 80px;
+  height: 80px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.1);
   pointer-events: none;
