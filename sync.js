@@ -1,9 +1,14 @@
-// ================= Движок синхронизации v6 =================
-//
-// Отправляет осмотры: фото через POST (с раскладкой по замечаниям) → submitVisit → проверка.
+// ================= Движок синхронизации v7 =================
+// Особенности:
+//   - Проверка доступности API (ping 2.5 сек) перед каждой отправкой.
+//   - Если API недоступен — НЕ тратим попытки, ждём 2 минуты.
+//   - Экспоненциальный backoff между попытками.
+//   - Фото — по одному с паузой.
 
-const SYNC_INTERVAL_MS = 30 * 1000;
-const REQUEST_TIMEOUT_MS = 60 * 1000;
+const SYNC_INTERVAL_OK_MS = 30 * 1000;      // обычная сеть — проверка раз в 30 сек
+const SYNC_INTERVAL_BAD_MS = 2 * 60 * 1000; // плохая сеть — раз в 2 минуты
+const REQUEST_TIMEOUT_MS = 60 * 1000;       // фото/осмотр — 60 сек
+const PING_TIMEOUT_MS = 2500;               // ping — 2.5 сек
 const PHOTO_PAUSE_MS = 500;
 
 const RETRY_DELAYS = [
@@ -19,6 +24,8 @@ let _syncRunning = false;
 let _syncTimer = null;
 let _wakeLock = null;
 
+// ================= ПУБЛИЧНЫЙ API =================
+
 async function syncNow() {
   if (_syncRunning) return { skipped: true, reason: 'already-running' };
   if (!navigator.onLine) return { skipped: true, reason: 'offline' };
@@ -28,6 +35,18 @@ async function syncNow() {
 
   const result = { sent: 0, failed: 0, photos: 0, skipped: 0, errors: [] };
   try {
+    // === ПРОВЕРКА ДОСТУПНОСТИ API ===
+    const reachable = await checkApiReachable();
+    await window.db.setMeta('apiReachable', { ok: reachable, at: Date.now() });
+
+    if (!reachable) {
+      console.log('[sync] API недоступен (белые списки?). Пропускаем отправку.');
+      result.skipped = 1;
+      result.reason = 'api-unreachable';
+      return result;
+    }
+
+    // === ОБЫЧНАЯ СИНХРОНИЗАЦИЯ ===
     if (window.db.resetStuckSyncing) await window.db.resetStuckSyncing(3);
 
     const pending = await window.db.getPendingVisits();
@@ -36,6 +55,17 @@ async function syncNow() {
     for (const visit of pending) {
       if (!navigator.onLine) break;
       if (!shouldRetryNow(visit)) { result.skipped++; continue; }
+
+      // Перед каждым осмотром — быстрая проверка связи (если сеть пропала)
+      if (result.sent > 0) {
+        const stillReachable = await checkApiReachable();
+        await window.db.setMeta('apiReachable', { ok: stillReachable, at: Date.now() });
+        if (!stillReachable) {
+          console.log('[sync] API пропал в середине. Останавливаемся.');
+          result.reason = 'api-lost';
+          break;
+        }
+      }
 
       try {
         const r = await syncVisit(visit);
@@ -60,6 +90,29 @@ async function syncNow() {
     notifyUI();
   }
   return result;
+}
+
+// Проверка доступности API за 2.5 секунды
+async function checkApiReachable() {
+  try {
+    const url = API_URL + '?action=ping&callback=cb';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), PING_TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        signal: controller.signal,
+        cache: 'no-store'
+      });
+      if (!response.ok) return false;
+      const text = await response.text();
+      return text.indexOf('pong') !== -1;
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (e) {
+    return false;
+  }
 }
 
 function shouldRetryNow(visit) {
@@ -89,21 +142,71 @@ async function resetAllAttempts() {
 
 function startAutoSync() {
   stopAutoSync();
+
   window.addEventListener('online', onOnline);
-  _syncTimer = setInterval(() => {
+  window.addEventListener('offline', onOffline);
+  document.addEventListener('visibilitychange', onVisibilityChange);
+
+  // Первая попытка — через 1 секунду после старта
+  setTimeout(() => {
     if (navigator.onLine) syncNow().catch(() => {});
-  }, SYNC_INTERVAL_MS);
-  setTimeout(() => syncNow().catch(() => {}), 3000);
+  }, 1000);
+
+  scheduleNext();
+}
+
+function scheduleNext() {
+  if (_syncTimer) { clearTimeout(_syncTimer); _syncTimer = null; }
+
+  // Смотрим, доступен ли API в последней проверке
+  window.db.getMeta('apiReachable').then(meta => {
+    const isBad = meta && !meta.ok && (Date.now() - meta.at) < 10 * 60 * 1000;
+    const interval = isBad ? SYNC_INTERVAL_BAD_MS : SYNC_INTERVAL_OK_MS;
+    _syncTimer = setTimeout(async () => {
+      if (navigator.onLine) {
+        try { await syncNow(); } catch (e) {}
+      }
+      scheduleNext();
+    }, interval);
+  }).catch(() => {
+    _syncTimer = setTimeout(async () => {
+      if (navigator.onLine) {
+        try { await syncNow(); } catch (e) {}
+      }
+      scheduleNext();
+    }, SYNC_INTERVAL_OK_MS);
+  });
 }
 
 function stopAutoSync() {
-  if (_syncTimer) { clearInterval(_syncTimer); _syncTimer = null; }
+  if (_syncTimer) { clearTimeout(_syncTimer); _syncTimer = null; }
   window.removeEventListener('online', onOnline);
+  window.removeEventListener('offline', onOffline);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
 }
 
 function onOnline() {
-  console.log('[sync] Сеть появилась, отправляем очередь');
-  setTimeout(() => syncNow().catch(() => {}), 500);
+  console.log('[sync] Сеть появилась — пробуем отправить');
+  // Сразу проверим и попробуем
+  setTimeout(async () => {
+    try { await syncNow(); } catch (e) {}
+    scheduleNext();
+  }, 500);
+}
+
+function onOffline() {
+  console.log('[sync] Сеть пропала');
+  notifyUI();
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible' && navigator.onLine) {
+    console.log('[sync] Приложение активно — пробуем отправить');
+    setTimeout(async () => {
+      try { await syncNow(); } catch (e) {}
+      scheduleNext();
+    }, 500);
+  }
 }
 
 function notifyUI() {
@@ -132,7 +235,6 @@ async function syncVisit(visit) {
   });
   notifyUI();
 
-  // photoMap: { stateKey: { common: [remote], byVariant: { variant: [remote] } } }
   const photoMap = {};
 
   for (let i = 0; i < photos.length; i++) {
@@ -189,6 +291,7 @@ async function syncVisit(visit) {
     throw new Error('Сервер вернул ошибку: ' + ((data && data.error) || 'неизвестно'));
   }
 
+  // Двойная проверка
   await sleep(500);
   try {
     const check = await apiGet('checkVisitExistsByClientId', { clientId: visit.clientId });
@@ -253,9 +356,7 @@ function buildPayloadWithPhotos(originalPayload, photoMap) {
       });
     });
 
-    // Убираем старое поле photos, если оно было
     delete rs.photos;
-
     results[stateKey] = rs;
   });
 
@@ -359,5 +460,6 @@ window.sync = {
   syncNow,
   startAutoSync,
   stopAutoSync,
-  resetAllAttempts
+  resetAllAttempts,
+  checkApiReachable
 };
