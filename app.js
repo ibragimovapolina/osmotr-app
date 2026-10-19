@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.0.5';
+const APP_VERSION = '2.1.2';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1997,55 +1997,56 @@ async function downloadVisitPhotos(visitData, onProgress) {
     if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey: '__extra__', variantKey: '', idx: i, isCommon: false, isExtra: true });
   });
 
-  if (!tasks.length) return;
+  if (!tasks.length) {
+    if (onProgress) onProgress(0); 
+    return;
+  }
+  
   let downloaded = 0;
 
   for (let i = 0; i < tasks.length; i++) {
     const task = tasks[i];
     try {
       const blob = await fetchPhotoAsBlob(task.url);
-      if (!blob) continue;
+      if (blob) {
+        const photoId = window.db.uuid();
+        const fileName = buildFileName(task.stateKey.split('.')[0] || 'server', task.stateKey.split('.')[1] || 'photo', task.idx + 1);
+        const localUrl = URL.createObjectURL(blob);
+        const remoteData = { url: task.url };
 
-      const photoId = window.db.uuid();
-      const fileName = buildFileName(task.stateKey.split('.')[0] || 'server', task.stateKey.split('.')[1] || 'photo', task.idx + 1);
-      
-      // Создаем localUrl для отображения
-      const localUrl = URL.createObjectURL(blob);
-      const remoteData = { url: task.url };
+        // Сохраняем в базу БЕЗ await (в фоне)
+        window.db.addPhoto({
+          photoId: photoId,
+          visitClientId: visitData.clientId,
+          stateKey: task.stateKey,
+          variantKey: task.variantKey,
+          fileName: fileName,
+          kvNumber: kv,
+          blob: blob,
+          status: 'pending',
+          attempts: 0,
+          lastError: '',
+          remote: remoteData,
+          localUrl: localUrl,
+          fromServer: true
+        }).catch(e => console.warn('Фоновая запись фото:', e));
 
-      await window.db.addPhoto({
-        photoId: photoId,
-        visitClientId: visitData.clientId,
-        stateKey: task.stateKey,
-        variantKey: task.variantKey,
-        fileName: fileName,
-        kvNumber: kv,
-        blob: blob,
-        status: 'pending',
-        attempts: 0,
-        lastError: '',
-        remote: remoteData,
-        localUrl: localUrl, // Сохраняем ссылку
-        fromServer: true
-      });
-
-      // Привязываем localUrl к объекту в payload
-      const rs = task.isExtra ? null : payload.results[task.stateKey];
-      if (task.isExtra) {
-        payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
-      } else if (rs) {
-        const arr = task.isCommon ? (rs.commonPhotos || []) : (rs.photosByVariant[task.variantKey] || []);
-        arr[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
-        if (task.isCommon) rs.commonPhotos = arr;
-        else rs.photosByVariant[task.variantKey] = arr;
+        const rs = task.isExtra ? null : payload.results[task.stateKey];
+        if (task.isExtra) {
+          payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
+        } else if (rs) {
+          const arr = task.isCommon ? (rs.commonPhotos || []) : (rs.photosByVariant[task.variantKey] || []);
+          arr[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
+          if (task.isCommon) rs.commonPhotos = arr;
+          else rs.photosByVariant[task.variantKey] = arr;
+        }
+        downloaded++;
       }
-      
-      downloaded++;
-      if (onProgress) onProgress(downloaded);
     } catch (err) {
       console.warn('[downloadVisitPhotos] Ошибка фото:', task.url, err.message);
     }
-    // Пауза 100 мс, чтобы не забивать GAS
+    
+    if (onProgress) onProgress(1);
     await new Promise(r => setTimeout(r, 100));
   }
 }
@@ -2055,15 +2056,22 @@ async function fetchPhotoAsBlob(url) {
     const match = url.match(/[?&]id=([^&]+)/);
     const fileId = match ? match[1] : null;
     if (!fileId) return null;
-    const res = await apiGet('getPhotoBase64', { fileId: fileId }, 15000);
+    
+    // Ждем ответ максимум 20 секунд
+    const res = await apiGet('getPhotoBase64', { fileId: fileId }, 20000); 
     const data = (res && res.data) ? res.data : res;
+    
     if (!data || !data.ok || !data.base64) return null;
+    
     const byteCharacters = atob(data.base64);
     const byteNumbers = new Array(byteCharacters.length);
     for (let i = 0; i < byteCharacters.length; i++) byteNumbers[i] = byteCharacters.charCodeAt(i);
     const byteArray = new Uint8Array(byteNumbers);
     return new Blob([byteArray], { type: data.mimeType || 'image/jpeg' });
-  } catch (e) { return null; }
+  } catch (e) {
+    console.warn('[fetchPhotoAsBlob] Ошибка или таймаут:', e.message);
+    return null;
+  }
 }
 
 // ================= ОФЛАЙН-СКАЧИВАНИЕ =================
@@ -2074,20 +2082,15 @@ async function openOfflineDownloadScreen() {
   state.offlineKvSelected = {};
   state.offlineSearch = '';
   
-  // Загружаем инфу о том, что уже скачано
   try {
     state.offlineDownloadedMap = await window.db.getAllOfflineVisitsInfo();
   } catch (e) {
     state.offlineDownloadedMap = {};
   }
 
-  render(); // Рисуем экран сразу
+  render(); 
 
-  if (!navigator.onLine) {
-    // Если нет сети, мы не сможем обновить список квартир с сервера, 
-    // но покажем те, что уже есть в памяти
-    return;
-  }
+  if (!navigator.onLine) return;
 
   try {
     const res = await apiGet('getAllVisitedApartments');
@@ -2096,18 +2099,15 @@ async function openOfflineDownloadScreen() {
     else if (res && res.data && Array.isArray(res.data)) list = res.data;
     else if (Array.isArray(res)) list = res;
     
-    // Объединяем список с сервера и то, что уже в памяти (на случай, если квартиры удалили с сервера, но они есть в кэше)
     const allKvs = new Set([...list, ...Object.keys(state.offlineDownloadedMap)]);
     state.offlineKvList = Array.from(allKvs).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
     
   } catch (e) {
     console.warn('[offline] Ошибка загрузки списка с сервера:', e);
-    // Если сервер упал, показываем хотя бы то, что есть в памяти
     state.offlineKvList = Object.keys(state.offlineDownloadedMap);
   }
   render();
 }
-
 function closeOfflineDownloadScreen() {
   state.offlineDownloadScreen = false;
   state.offlineKvList = [];
@@ -2148,7 +2148,7 @@ async function startSelectedOfflineDownload() {
 
   let successCount = 0;
   
-  // Сначала узнаем, сколько всего фото
+  // Считаем общее количество фото
   try {
     for (const kv of selected) {
       const listRes = await apiGet('getVisitsByKv', { kvNumber: kv });
@@ -2173,11 +2173,14 @@ async function startSelectedOfflineDownload() {
   
   updateOfflineProgressModal();
 
-  // Скачиваем и сохраняем
+  // Скачиваем
   for (let i = 0; i < selected.length; i++) {
     const kv = selected[i];
     state.offlineProgress.current = i + 1;
     state.offlineProgress.kv = kv;
+    
+    // СБРАСЫВАЕМ счетчик фото для ЭТОЙ квартиры (важно!)
+    state.offlineProgress.photos = 0; 
     updateOfflineProgressModal();
 
     try {
@@ -2189,30 +2192,19 @@ async function startSelectedOfflineDownload() {
           const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
           if (visitData && visitData.found) {
             
-            // 1. Скачиваем фото (счетчик обновляется в downloadVisitPhotos)
             await downloadVisitPhotos(visitData, (count) => {
               state.offlineProgress.photos += count;
               updateOfflineProgressModal();
             });
-
-            // 2. Показываем, что теперь сохраняем в память
-            const textEl = document.getElementById('offlineProgressText');
-            if (textEl) textEl.textContent = 'Сохранение в память...';
             
-            // Даем браузеру 1000 мс, чтобы отрисовать текст, прежде чем он зависнет на записи
-            await new Promise(r => setTimeout(r, 1000));
-
-            // 3. Записываем в IndexedDB
-            await window.db.saveOfflineVisit({
+            // Сохраняем осмотр в фоне, без await
+            window.db.saveOfflineVisit({
               clientId: v.clientId,
               kvNumber: kv,
               visitedAt: v.visitedAt,
               email: v.email,
               payload: visitData.payload
-            });
-
-            // Возвращаем текст обратно
-            if (textEl) textEl.textContent = `Квартира ${state.offlineProgress.current} из ${state.offlineProgress.total} (№ ${state.offlineProgress.kv})`;
+            }).catch(e => console.warn('Фоновая запись осмотра:', e));
           }
         }
       }
@@ -2220,17 +2212,20 @@ async function startSelectedOfflineDownload() {
     } catch (err) {
       console.warn('[offline download] kv', kv, err.message);
     }
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 300));
   }
+
+  // Ждем, чтобы база данных успела дописать данные в фоне
+  await new Promise(r => setTimeout(r, 1000));
 
   state.offlineDownloading = false;
   state.offlineShowProgressModal = false;
   closeOfflineProgressModal();
   
-  alert(`✅ Скачано квартир: ${successCount}. Скачано фото: ${state.offlineProgress.photos} из ${state.offlineProgress.totalPhotos}.`);
+  alert(`✅ Скачано квартир: ${successCount}. Всего фото: ${state.offlineProgress.totalPhotos}.`);
   closeOfflineDownloadScreen();
 }
-
+}
 function renderOfflineDownloadScreen(app) {
   const search = state.offlineSearch.toLowerCase().trim();
   const filtered = state.offlineKvList.filter(kv => kv.toLowerCase().includes(search));
