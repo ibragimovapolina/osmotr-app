@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.2.5';
+const APP_VERSION = '1.2.6';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -312,17 +312,25 @@ function renderVolumeModal() {
   backdrop.id = 'volumeModalBackdrop';
   backdrop.className = 'modal-backdrop';
   backdrop.innerHTML = `
-    <div class="modal-window compact" onclick="event.stopPropagation()">
-      <div class="modal-subtitle-compact">${escapeHtml(m.variant)}</div>
-      <div class="modal-input-row-compact">
-        <input id="volumeInput" class="modal-input-compact" type="text" inputmode="decimal"
+    <div class="volume-modal" onclick="event.stopPropagation()">
+      <div class="volume-modal-header">
+        <div class="volume-modal-icon">${iconRuler(20)}</div>
+        <div class="volume-modal-title">Объём замечания</div>
+      </div>
+
+      <div class="volume-modal-remark">${escapeHtml(m.variant)}</div>
+
+      <div class="volume-modal-input-wrap">
+        <input id="volumeInput" class="volume-modal-input" type="text" inputmode="decimal"
                value="${escapeAttr(m.value)}" placeholder="0"
                oninput="onVolumeInput(this.value)">
-        <span class="modal-unit-compact">${escapeHtml(m.unit || '—')}</span>
+        <div class="volume-modal-unit">${escapeHtml(m.unit || 'ед.')}</div>
       </div>
-      <div class="modal-actions-compact">
-        <button class="btn btn-secondary" onclick="cancelVolume()">Отмена</button>
-        <button class="btn btn-primary" id="volumeOkBtn" onclick="confirmVolume()" ${m.value ? '' : 'disabled'}>Готово</button>
+
+      <div class="volume-modal-actions">
+        <button class="volume-modal-btn volume-modal-btn-secondary" onclick="cancelVolume()">Отмена</button>
+        <button class="volume-modal-btn volume-modal-btn-primary" id="volumeOkBtn"
+                onclick="confirmVolume()" ${m.value ? '' : 'disabled'}>Готово</button>
       </div>
     </div>
   `;
@@ -1558,19 +1566,87 @@ function renderObjectCard(divKey, obj) {
   if (!objState.commonPhotos) objState.commonPhotos = [];
   if (!objState.photosByVariant) objState.photosByVariant = {};
 
+  // === Блок «Общий вид» — сверху ===
+  const commonPhotosHtml = (objState.commonPhotos || []).map((p, i) => `
+    <div class="photo-item">
+      <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
+      <button type="button" class="photo-remove" onclick="removePhotoFromSection('${escapeAttr(stateKey)}', '__common__', ${i})">${iconX(14)}</button>
+    </div>
+  `).join('');
+
+  const commonUploading = state.form.uploading[stateKey + '__common__'];
+  let commonUploadingHtml = '';
+  if (commonUploading) {
+    commonUploadingHtml = `
+      <div class="photo-item photo-uploading">
+        <div class="photo-spinner"></div>
+        <div class="photo-uploading-text">${commonUploading.current} из ${commonUploading.total}</div>
+      </div>
+    `;
+  }
+
+  const commonSection = `
+    <div class="photo-section common-view">
+      <div class="photo-section-title">Общий вид</div>
+      <div class="photo-list">${commonPhotosHtml}${commonUploadingHtml}</div>
+      <label class="photo-add-label">
+        <input type="file" accept="image/*" multiple style="display:none"
+               onchange="onPhotoSelected2(event, '${escapeAttr(stateKey)}', '__common__')">
+        <span class="photo-add-btn">${iconCamera(18)}<span>Добавить фото</span></span>
+      </label>
+    </div>
+  `;
+
+  // === Чипы с привязанными фото ===
   const variantsHtml = (obj.variants || []).map((v) => {
     const isSelected = objState.selected.includes(v.variant);
     const vol = objState.volumes[v.variant];
     const volBadge = (isSelected && vol && vol.value)
       ? `<span class="volume-badge" onclick="event.stopPropagation(); editVolume('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}', '${escapeAttr(v.unit || '')}')">${escapeHtml(vol.value)} ${escapeHtml(vol.unit || '')}</span>`
       : '';
-    const chipClass = 'chip ' + (isSelected ? 'chip-selected' : '');
+
+    let photosUnderChip = '';
+    if (isSelected) {
+      const photos = (objState.photosByVariant && objState.photosByVariant[v.variant]) || [];
+      const photosHtml = photos.map((p, i) => `
+        <div class="photo-item">
+          <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
+          <button type="button" class="photo-remove" onclick="removePhotoFromSection('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}', ${i})">${iconX(14)}</button>
+        </div>
+      `).join('');
+
+      const uploading = state.form.uploading[stateKey + '__' + v.variant];
+      let uploadingHtml = '';
+      if (uploading) {
+        uploadingHtml = `
+          <div class="photo-item photo-uploading">
+            <div class="photo-spinner"></div>
+            <div class="photo-uploading-text">${uploading.current} из ${uploading.total}</div>
+          </div>
+        `;
+      }
+
+      photosUnderChip = `
+        <div class="chip-photos">
+          ${(photosHtml || uploadingHtml) ? `<div class="photo-list">${photosHtml}${uploadingHtml}</div>` : ''}
+          <label class="photo-add-label">
+            <input type="file" accept="image/*" multiple style="display:none"
+                   onchange="onPhotoSelected2(event, '${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}')">
+            <span class="photo-add-btn small">${iconCamera(16)}<span>Добавить фото</span></span>
+          </label>
+        </div>
+      `;
+    }
+
     return `
-      <span class="chip-wrap">
-        <button type="button" class="${chipClass}"
-                onclick="onChipClick('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}', ${v.requireVolume ? 'true' : 'false'}, '${escapeAttr(v.unit || '')}')">${escapeHtml(v.variant)}</button>
-        ${volBadge}
-      </span>
+      <div class="chip-and-photos">
+        <span class="chip-wrap">
+          <button type="button" class="chip ${isSelected ? 'chip-selected' : ''}"
+                  onclick="onChipClick('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}', ${v.requireVolume ? 'true' : 'false'}, '${escapeAttr(v.unit || '')}')">${escapeHtml(v.variant)}</button>
+          ${volBadge}
+        </span>
+        ${photosUnderChip}
+      </div>
     `;
   }).join('');
 
@@ -1581,16 +1657,18 @@ function renderObjectCard(divKey, obj) {
   const customHtml = `<textarea class="custom-input" rows="2" placeholder="Своё замечание (если нужно)"
     oninput="onCustomInput('${escapeAttr(stateKey)}', this.value)">${escapeHtml(objState.custom || '')}</textarea>`;
 
-  const photoSectionsHtml = buildPhotoSections(stateKey, objState);
-
   const error = objState.error ? `<div class="obj-error">${escapeHtml(objState.error)}</div>` : '';
 
   return `
     <div class="object-card" data-state-key="${escapeAttr(stateKey)}">
       <div class="object-title">${escapeHtml(obj.label)}</div>
-      <div class="chips-row">${noIssuesHtml}${variantsHtml}</div>
+
+      ${commonSection}
+
+      <div class="chips-row">${noIssuesHtml}</div>
+      <div class="chips-with-photos">${variantsHtml}</div>
+
       ${customHtml}
-      <div class="photo-sections">${photoSectionsHtml}</div>
       ${error}
     </div>
   `;
@@ -1624,7 +1702,7 @@ function renderPhotoSection(stateKey, variantKey, title, photos, uploading) {
   const photoItemsHtml = photos.map((p, i) => `
     <div class="photo-item">
       <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
-      <button type="button" class="photo-remove" onclick="removePhotoFromSection('${escapeAttr(stateKey)}', '${escapeAttr(variantKey)}', ${i})">×</button>
+      <button type="button" class="photo-remove" onclick="removePhotoFromSection('${escapeAttr(stateKey)}', '${escapeAttr(variantKey)}', ${i})">${iconX(14)}</button>
     </div>
   `).join('');
 
@@ -1645,7 +1723,7 @@ function renderPhotoSection(stateKey, variantKey, title, photos, uploading) {
       <label class="photo-add-label">
         <input type="file" accept="image/*" multiple style="display:none"
                onchange="onPhotoSelected2(event, '${escapeAttr(stateKey)}', '${escapeAttr(variantKey)}')">
-        <span class="photo-add-btn">📷 Добавить фото</span>
+        <span class="photo-add-btn">${iconCamera(20)}<span>Добавить фото</span></span>
       </label>
     </div>
   `;
@@ -1892,7 +1970,7 @@ function renderExtraInfo(app, div, progressText, isLast) {
   let photoItemsHtml = extraPhotos.map((p, i) => `
     <div class="photo-item">
       <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
-      <button type="button" class="photo-remove" onclick="removeExtraPhoto(${i})">×</button>
+      <button type="button" class="photo-remove" onclick="removeExtraPhoto(${i})">${iconX(14)}</button>
     </div>
   `).join('');
   let uploadingHtml = '';
@@ -1922,7 +2000,7 @@ function renderExtraInfo(app, div, progressText, isLast) {
           <div class="photo-list">${photoItemsHtml}${uploadingHtml}</div>
           <label class="photo-add-label">
             <input type="file" accept="image/*" multiple style="display:none" onchange="onExtraPhotoSelected(event)">
-            <span class="photo-add-btn">📷 Добавить фото</span>
+            <span class="photo-add-btn">${iconCamera(20)}<span>Добавить фото</span></span>
           </label>
         </div>
       </div>
@@ -1933,7 +2011,6 @@ function renderExtraInfo(app, div, progressText, isLast) {
     </div>
   `;
 }
-
 function onCommentsInput(value) {
   state.form.comments = value;
   debouncedAutoSave();
@@ -2846,5 +2923,37 @@ function iconPlus(size) {
   return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <path d="M12 5v14"/>
     <path d="M5 12h14"/>
+  </svg>`;
+}
+function iconRuler(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 17l14-14 4 4-14 14H3v-4z"/>
+    <path d="M14 6l1.5 1.5"/>
+    <path d="M11 9l1.5 1.5"/>
+    <path d="M8 12l1.5 1.5"/>
+  </svg>`;
+}
+
+function iconCamera(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+    <circle cx="12" cy="13" r="4"/>
+  </svg>`;
+}
+
+function iconCheck(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 12.5l5 5L20 7"/>
+  </svg>`;
+}
+
+function iconArrowRight(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 12h14"/>
+    <path d="M12 5l7 7-7 7"/>
   </svg>`;
 }
