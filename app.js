@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.0.3';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -48,7 +48,7 @@ const state = {
   offlineSearch: '',
   offlineDownloadedMap: {},
   offlineDownloading: false,
-  offlineProgress: { current: 0, total: 0, kv: '', photos: 0 },
+  offlineProgress: { current: 0, total: 0, kv: '', photos: 0, totalPhotos: 0 },
   offlineShowProgressModal: false
 };
 
@@ -205,7 +205,6 @@ function parseResponse(text) {
 function render() {
   const app = document.getElementById('app');
   
-  // Если открыт офлайн-экран, показываем его ПЕРВЫМ
   if (state.offlineDownloadScreen) {
     return renderOfflineDownloadScreen(app);
   }
@@ -1012,30 +1011,6 @@ async function checkApartmentSmart(kv) {
 
 function onKvNext() {
   if (!state.form.apartment) return;
-   // ВОТ ЭТОТ БЛОК: восстанавливаем ссылки на фото из blob
-  if (state.existingVisit && state.existingVisit.payload) {
-    const payload = state.existingVisit.payload;
-    const restoreUrls = (arr) => {
-      (arr || []).forEach(p => {
-        if (p.photoId && !p.localUrl) {
-          // Если есть photoId, но нет localUrl - пробуем достать из базы (в фоне)
-          window.db.getPhoto(p.photoId).then(dbPhoto => {
-            if (dbPhoto && dbPhoto.blob) {
-              p.localUrl = URL.createObjectURL(dbPhoto.blob);
-            }
-          });
-        }
-      });
-    };
-    Object.keys(payload.results || {}).forEach(sk => {
-      restoreUrls(payload.results[sk].commonPhotos);
-      Object.keys(payload.results[sk].photosByVariant || {}).forEach(v => {
-        restoreUrls(payload.results[sk].photosByVariant[v]);
-      });
-    });
-    restoreUrls(payload.extraPhotos);
-  }
-  // КОНЕЦ БЛОКА
   if (state.existingVisit && state.existingVisit.payload) {
     const prev = state.existingVisit.payload;
     state.form.results = prev.results || {};
