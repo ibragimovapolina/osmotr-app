@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.9.6';
+const APP_VERSION = '2.0.0';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1012,6 +1012,30 @@ async function checkApartmentSmart(kv) {
 
 function onKvNext() {
   if (!state.form.apartment) return;
+   // ВОТ ЭТОТ БЛОК: восстанавливаем ссылки на фото из blob
+  if (state.existingVisit && state.existingVisit.payload) {
+    const payload = state.existingVisit.payload;
+    const restoreUrls = (arr) => {
+      (arr || []).forEach(p => {
+        if (p.photoId && !p.localUrl) {
+          // Если есть photoId, но нет localUrl - пробуем достать из базы (в фоне)
+          window.db.getPhoto(p.photoId).then(dbPhoto => {
+            if (dbPhoto && dbPhoto.blob) {
+              p.localUrl = URL.createObjectURL(dbPhoto.blob);
+            }
+          });
+        }
+      });
+    };
+    Object.keys(payload.results || {}).forEach(sk => {
+      restoreUrls(payload.results[sk].commonPhotos);
+      Object.keys(payload.results[sk].photosByVariant || {}).forEach(v => {
+        restoreUrls(payload.results[sk].photosByVariant[v]);
+      });
+    });
+    restoreUrls(payload.extraPhotos);
+  }
+  // КОНЕЦ БЛОКА
   if (state.existingVisit && state.existingVisit.payload) {
     const prev = state.existingVisit.payload;
     state.form.results = prev.results || {};
@@ -1923,7 +1947,6 @@ async function loadExistingVisitsList(kv) {
 async function selectExistingVisit(clientId) {
   if (state.loadingExisting) return;
 
-  // Если уже выбран — снимаем выбор
   if (state.selectedVisitId === clientId) {
     state.selectedVisitId = null;
     state.existingVisit = null;
@@ -1936,23 +1959,35 @@ async function selectExistingVisit(clientId) {
   renderKvResultBlock();
 
   try {
-    // 1. СНАЧАЛА ищем в памяти телефона (мгновенно)
+    let visitData = null;
+    
+    // 1. Сначала ищем в памяти (мгновенно)
     const offline = await window.db.getOfflineVisitsByKv(state.form.kvNumber);
     const found = offline.find(v => v.clientId === clientId);
     
     if (found) {
-      console.log('[selectExistingVisit] Загружено из памяти:', clientId);
-      state.existingVisit = { found: true, clientId, payload: found.payload };
+      visitData = { found: true, clientId, payload: found.payload };
     } else if (navigator.onLine) {
-      // 2. Если в памяти нет, грузим с сервера
+      // 2. Если в памяти нет — грузим данные осмотра (БЕЗ фото, чтобы не ждать)
       const res = await apiGet('getVisitById', { clientId: clientId }, 15000);
       const data = (res && res.data) ? res.data : res;
       if (!data || !data.found) throw new Error('Осмотр не найден');
-      state.existingVisit = data;
-      await downloadVisitPhotos(data);
+      
+      visitData = data;
+      
+      // Сохраняем сам осмотр в память (фото скачаем отдельно или при офлайн-загрузке)
+      await window.db.saveOfflineVisit({
+        clientId: visitData.clientId,
+        kvNumber: state.form.kvNumber,
+        visitedAt: visitData.visitedAt,
+        email: visitData.email,
+        payload: visitData.payload
+      });
     } else {
       throw new Error('Нет интернета и нет скачанных данных.');
     }
+
+    state.existingVisit = visitData;
   } catch (err) {
     console.error('[selectExistingVisit]', err);
     alert('Ошибка загрузки: ' + err.message);
@@ -1999,6 +2034,7 @@ async function downloadVisitPhotos(visitData, onProgress) {
       const photoId = window.db.uuid();
       const fileName = buildFileName(task.stateKey.split('.')[0] || 'server', task.stateKey.split('.')[1] || 'photo', task.idx + 1);
       
+      // Создаем localUrl для отображения
       const localUrl = URL.createObjectURL(blob);
       const remoteData = { url: task.url };
 
@@ -2014,10 +2050,11 @@ async function downloadVisitPhotos(visitData, onProgress) {
         attempts: 0,
         lastError: '',
         remote: remoteData,
-        localUrl: localUrl, 
+        localUrl: localUrl, // Сохраняем ссылку
         fromServer: true
       });
 
+      // Привязываем localUrl к объекту в payload
       const rs = task.isExtra ? null : payload.results[task.stateKey];
       if (task.isExtra) {
         payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
@@ -2029,11 +2066,12 @@ async function downloadVisitPhotos(visitData, onProgress) {
       }
       
       downloaded++;
-      if (onProgress) onProgress(downloaded); // Передаем 1 фото
+      if (onProgress) onProgress(downloaded);
     } catch (err) {
       console.warn('[downloadVisitPhotos] Ошибка фото:', task.url, err.message);
     }
-    await new Promise(r => setTimeout(r, 200));
+    // Пауза 100 мс, чтобы не забивать GAS
+    await new Promise(r => setTimeout(r, 100));
   }
 }
 
