@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.8.1';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -2978,24 +2978,37 @@ async function openOfflineDownloadScreen() {
     return;
   }
   
+  // 1. СРАЗУ переключаем состояние и рисуем экран
   state.offlineDownloadScreen = true;
   state.offlineKvList = [];
   state.offlineKvSelected = {};
   state.offlineSearch = '';
-  state.screen = 'settings'; 
-  render();
+  state.screen = 'settings';
+  render(); 
   
+  // 2. Только после этого идем в сеть за списком квартир
   try {
     const res = await apiGet('getAllVisitedApartments');
     const data = (res && res.data) ? res.data : res;
-    state.offlineKvList = data.data || [];
+    
+    // Безопасно извлекаем массив (на случай, если API вернул что-то не то)
+    if (data && Array.isArray(data.data)) {
+      state.offlineKvList = data.data;
+    } else if (Array.isArray(data)) {
+      state.offlineKvList = data;
+    } else {
+      state.offlineKvList = [];
+    }
+    
   } catch (e) {
-    alert('Ошибка загрузки списка: ' + e.message);
+    console.warn('[offline download] Ошибка загрузки списка:', e.message);
+    alert('Не удалось загрузить список квартир: ' + e.message);
     state.offlineDownloadScreen = false;
   }
+  
+  // 3. Обновляем экран с полученным списком (или пустотой)
   render();
 }
-
 function closeOfflineDownloadScreen() {
   state.offlineDownloadScreen = false;
   state.offlineKvList = [];
@@ -3096,6 +3109,7 @@ async function startSelectedOfflineDownload() {
 }
 
 function renderOfflineDownloadScreen(app) {
+  console.log('[offline screen] Отрисовка. Всего квартир:', state.offlineKvList.length);
   const search = state.offlineSearch.toLowerCase().trim();
   const filtered = state.offlineKvList.filter(kv => kv.toLowerCase().includes(search));
   
