@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.8.0';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -16,7 +16,7 @@ const state = {
     uploading: {},
     comments: '',
     extraPhotos: [],
-    sourceVisitId: null // ID прошлого осмотра, если дополняем
+    sourceVisitId: null
   },
   submitResult: null,
   pendingDraft: null,
@@ -36,19 +36,23 @@ const state = {
   photoLightbox: null,
   queueBackupBusy: false,
   queueBackupMsg: null,
+  
+  // Для загрузки прошлых осмотров
   existingVisits: [],     
   selectedVisitId: null,  
   loadingExisting: false, 
   existingVisit: null,    
+  
+  // Для офлайн-скачивания
   offlineDownloadScreen: false, 
   offlineKvList: [],            
   offlineKvSelected: {},        
   offlineSearch: '',            
   offlineDownloading: false,
-  offlineProgress: { current: 0, total: 0, kv: '' }
+  offlineProgress: { current: 0, total: 0, kv: '', photos: 0 },
+  offlineShowProgressModal: false
 };
 
-// Флаг защиты от двойного клика по «удалить фото»
 let _deletingPhoto = false;
 
 // ================= СТАРТ =================
@@ -273,6 +277,8 @@ function render() {
   if (state.screen === 'queue')       return renderQueue(app);
   if (state.screen === 'visits')      return renderVisits(app);
   if (state.screen === 'settings')    return renderSettings(app);
+  
+  // Экран офлайн-скачивания
   if (state.offlineDownloadScreen) return renderOfflineDownloadScreen(app);
 }
 
@@ -625,7 +631,7 @@ async function renderSettings(app) {
           <span class="settings-item-value">${photoQueue}</span>
         </div>
         <button class="btn btn-primary" style="margin-top:12px;" onclick="updateReferenceNow()">🔄 Обновить справочник</button>
-         <button class="btn btn-primary" style="margin-top:12px;" onclick="openOfflineDownloadScreen()">
+        <button class="btn btn-primary" style="margin-top:12px;" onclick="openOfflineDownloadScreen()">
           📥 Скачать осмотры для офлайна
         </button>
         <button class="btn btn-secondary" style="margin-top:8px;" onclick="exportVisitsCsvFromSettings()">📥 Скачать осмотры (CSV)</button>
@@ -1462,10 +1468,7 @@ function onKvNext() {
     state.form.comments = prev.comments || '';
     state.form.extraPhotos = prev.extraPhotos || [];
 
-    // Новый clientId — НОВАЯ СТРОКА в таблице (сохраняем историю)
     state.draftId = window.db.uuid();
-
-    // Запоминаем источник
     state.form.sourceVisitId = state.existingVisit.clientId;
 
     console.log('[onKvNext] Загружены данные прошлого осмотра. Новый clientId:', state.draftId);
@@ -2571,12 +2574,6 @@ async function showVisitPreview(clientId) {
   }
 
   const photos = await window.db.getPhotosForVisit(clientId);
-  console.log('[preview] Фото из DB:', photos.length);
-  if (photos.length) {
-    console.log('[preview] Первое фото:', photos[0]);
-    console.log('[preview] blob:', photos[0].blob, '| stateKey:', photos[0].stateKey, '| variantKey:', photos[0].variantKey);
-  }
-
   const fresh = photos.map(p => {
     let url = '';
     try {
@@ -2585,13 +2582,9 @@ async function showVisitPreview(clientId) {
       } else if (p.localUrl) {
         url = p.localUrl;
       }
-    } catch (e) {
-      console.warn('[preview] Ошибка создания URL:', e.message);
-    }
+    } catch (e) {}
     return Object.assign({}, p, { freshUrl: url });
   });
-
-  console.log('[preview] freshUrl у первого фото:', fresh[0] && fresh[0].freshUrl);
 
   state.visitPreview = { visit: visit, photos: fresh };
   renderVisitPreviewModal();
@@ -2796,8 +2789,8 @@ async function resetVisitAttempts(clientId) {
   await refreshQueueStats();
   render();
 }
-// ================= ЗАГРУЗКА ПРОШЛЫХ ОСМОТРОВ =================
 
+// ================= ЗАГРУЗКА ПРОШЛЫХ ОСМОТРОВ =================
 async function loadExistingVisitsList(kv) {
   try {
     if (!navigator.onLine) {
@@ -2864,14 +2857,13 @@ async function selectExistingVisit(clientId) {
   }
 }
 
-async function downloadVisitPhotos(visitData) {
+async function downloadVisitPhotos(visitData, onProgress) {
   if (!visitData || !visitData.payload) return;
 
   const payload = visitData.payload;
   const kv = payload.kvNumber || '';
   const tasks = [];
 
-  // Собираем все URL'ы с привязкой к stateKey и variantKey
   Object.keys(payload.results || {}).forEach(stateKey => {
     const rs = payload.results[stateKey];
     (rs.commonPhotos || []).forEach((p, i) => {
@@ -2895,9 +2887,8 @@ async function downloadVisitPhotos(visitData) {
   });
 
   if (!tasks.length) return;
-  console.log('[downloadVisitPhotos] Скачиваем фото:', tasks.length);
+  let downloaded = 0;
 
-  // Скачиваем по одному с паузой 200 мс
   for (let i = 0; i < tasks.length; i++) {
     const task = tasks[i];
     try {
@@ -2911,7 +2902,7 @@ async function downloadVisitPhotos(visitData) {
         task.idx + 1
       );
       const localUrl = URL.createObjectURL(blob);
-      const remoteData = { url: task.url }; // Сохраняем оригинальную ссылку
+      const remoteData = { url: task.url };
 
       await window.db.addPhoto({
         photoId: photoId,
@@ -2921,7 +2912,7 @@ async function downloadVisitPhotos(visitData) {
         fileName: fileName,
         kvNumber: kv,
         blob: blob,
-        status: 'pending', // Скачанное фото, привязанное к прошлому осмотру
+        status: 'pending',
         attempts: 0,
         lastError: '',
         remote: remoteData,
@@ -2929,7 +2920,6 @@ async function downloadVisitPhotos(visitData) {
         fromServer: true
       });
 
-      // Привязываем к результату и сохраняем remote
       const rs = task.isExtra ? null : payload.results[task.stateKey];
       if (task.isExtra) {
         payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
@@ -2939,20 +2929,19 @@ async function downloadVisitPhotos(visitData) {
         if (task.isCommon) rs.commonPhotos = arr;
         else rs.photosByVariant[task.variantKey] = arr;
       }
-
-      console.log(`[downloadVisitPhotos] ${i + 1}/${tasks.length}`);
+      
+      downloaded++;
+      if (onProgress) onProgress(downloaded);
+      
     } catch (err) {
       console.warn('[downloadVisitPhotos] Ошибка фото:', task.url, err.message);
     }
     await new Promise(r => setTimeout(r, 200));
   }
-
-  console.log('[downloadVisitPhotos] Готово');
 }
 
 async function fetchPhotoAsBlob(url) {
   try {
-    // Извлекаем ID файла из ссылки вида https://drive.google.com/uc?id=XXXX
     const match = url.match(/[?&]id=([^&]+)/);
     const fileId = match ? match[1] : null;
 
@@ -2961,7 +2950,6 @@ async function fetchPhotoAsBlob(url) {
       return null;
     }
 
-    // Запрашиваем фото через наш сервер (GAS), чтобы обойти CORS
     const res = await apiGet('getPhotoBase64', { fileId: fileId }, 15000);
     const data = (res && res.data) ? res.data : res;
 
@@ -2970,7 +2958,6 @@ async function fetchPhotoAsBlob(url) {
       return null;
     }
 
-    // Превращаем base64 обратно в Blob
     const byteCharacters = atob(data.base64);
     const byteNumbers = new Array(byteCharacters.length);
     for (let i = 0; i < byteCharacters.length; i++) {
@@ -2995,10 +2982,9 @@ async function openOfflineDownloadScreen() {
   state.offlineKvList = [];
   state.offlineKvSelected = {};
   state.offlineSearch = '';
-  state.screen = 'settings'; // Оставляем фон
+  state.screen = 'settings'; 
   render();
   
-  // Загружаем список квартир с сервера
   try {
     const res = await apiGet('getAllVisitedApartments');
     const data = (res && res.data) ? res.data : res;
@@ -3051,19 +3037,21 @@ async function startSelectedOfflineDownload() {
     alert('Выберите хотя бы одну квартиру.');
     return;
   }
-  if (!confirm(`Скачать данные для ${selected.length} квартир?`)) return;
 
   state.offlineDownloading = true;
-  state.offlineProgress = { current: 0, total: selected.length, kv: '' };
-  render();
+  state.offlineShowProgressModal = true;
+  state.offlineProgress = { current: 0, total: selected.length, kv: '', photos: 0 };
+  
+  renderOfflineProgressModal();
 
   let successCount = 0;
+  let totalPhotosCount = 0;
 
   for (let i = 0; i < selected.length; i++) {
     const kv = selected[i];
     state.offlineProgress.current = i + 1;
     state.offlineProgress.kv = kv;
-    render();
+    updateOfflineProgressModal();
 
     try {
       const listRes = await apiGet('getVisitsByKv', { kvNumber: kv });
@@ -3075,10 +3063,13 @@ async function startSelectedOfflineDownload() {
           const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
 
           if (visitData && visitData.found) {
-            // Скачиваем фото (используем нашу функцию, которая качает через GAS)
-            await downloadVisitPhotos(visitData);
+            const photosBefore = totalPhotosCount;
+            await downloadVisitPhotos(visitData, (count) => {
+              totalPhotosCount = photosBefore + count;
+              state.offlineProgress.photos = totalPhotosCount;
+              updateOfflineProgressModal();
+            });
             
-            // Сохраняем в IndexedDB
             await window.db.saveOfflineVisit({
               clientId: v.clientId,
               kvNumber: kv,
@@ -3093,11 +3084,14 @@ async function startSelectedOfflineDownload() {
     } catch (err) {
       console.warn('[offline download] kv', kv, err.message);
     }
-    await new Promise(r => setTimeout(r, 500)); // Пауза, чтобы не душить GAS
+    await new Promise(r => setTimeout(r, 500));
   }
 
-  alert(`✅ Скачано квартир: ${successCount} из ${selected.length}.`);
   state.offlineDownloading = false;
+  state.offlineShowProgressModal = false;
+  closeOfflineProgressModal();
+  
+  alert(`✅ Скачано квартир: ${successCount}. Всего фото: ${totalPhotosCount}.`);
   closeOfflineDownloadScreen();
 }
 
@@ -3147,28 +3141,65 @@ function renderOfflineDownloadScreen(app) {
         }).join('')}
       </div>
 
-      ${state.offlineDownloading ? `
-        <div class="offline-progress">
-          <div class="offline-progress-text">
-            Скачивание: ${state.offlineProgress.current} из ${state.offlineProgress.total} (кв. ${state.offlineProgress.kv})
-          </div>
-          <div class="offline-progress-bar">
-            <div class="offline-progress-fill" style="width: ${(state.offlineProgress.current / state.offlineProgress.total) * 100}%"></div>
-          </div>
-          <div style="font-size:12px; color:var(--text-secondary); text-align:center; margin-top:8px;">
-            Пожалуйста, не закрывайте приложение.
-          </div>
-        </div>
-      ` : `
-        <button class="btn btn-primary btn-large" style="margin-top:16px;" 
-                onclick="startSelectedOfflineDownload()" 
-                ${visibleSelected === 0 ? 'disabled' : ''}>
-          📥 Скачать выбранные (${visibleSelected})
-        </button>
-        <button class="btn btn-secondary" onclick="closeOfflineDownloadScreen()">← Назад</button>
-      `}
+      <button class="btn btn-primary btn-large" style="margin-top:16px;" 
+              onclick="startSelectedOfflineDownload()" 
+              ${visibleSelected === 0 || state.offlineDownloading ? 'disabled' : ''}>
+        📥 Скачать выбранные (${visibleSelected})
+      </button>
+      <button class="btn btn-secondary" onclick="closeOfflineDownloadScreen()">← Назад</button>
     </div>
   `;
+}
+
+function renderOfflineProgressModal() {
+  const existing = document.getElementById('offlineProgressBackdrop');
+  if (existing) existing.remove();
+
+  if (!state.offlineShowProgressModal) return;
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'offlineProgressBackdrop';
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="modal-window" style="max-width: 340px; text-align: center;">
+      <h2 style="margin-bottom: 16px;">Скачивание данных</h2>
+      <div style="font-size: 14px; color: var(--text-secondary); margin-bottom: 20px;">
+        Пожалуйста, не закрывайте приложение и держите интернет включенным.
+      </div>
+      
+      <div style="width: 100%; height: 8px; background: #E0E0E0; border-radius: 4px; overflow: hidden; margin-bottom: 12px;">
+        <div id="offlineProgressFill" style="width: 0%; height: 100%; background: var(--green); transition: width 0.3s ease;"></div>
+      </div>
+      
+      <div id="offlineProgressText" style="font-size: 15px; font-weight: 600; color: var(--text);"></div>
+      <div id="offlineProgressPhotos" style="font-size: 13px; color: var(--text-secondary); margin-top: 8px;"></div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  updateOfflineProgressModal();
+}
+
+function updateOfflineProgressModal() {
+  const fill = document.getElementById('offlineProgressFill');
+  const text = document.getElementById('offlineProgressText');
+  const photosText = document.getElementById('offlineProgressPhotos');
+
+  if (!fill || !text) return;
+
+  const p = state.offlineProgress;
+  const percent = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
+  
+  fill.style.width = percent + '%';
+  text.textContent = `Квартира ${p.current} из ${p.total} (№ ${p.kv})`;
+  
+  if (photosText && p.photos > 0) {
+    photosText.textContent = `Скачано фотографий: ${p.photos}`;
+  }
+}
+
+function closeOfflineProgressModal() {
+  const el = document.getElementById('offlineProgressBackdrop');
+  if (el) el.remove();
 }
 
 // ================= ЭКСПОРТ ДЛЯ ONCLICK =================
@@ -3184,6 +3215,12 @@ window.uploadQueueToDrive = uploadQueueToDrive;
 window.sendVisitNow = sendVisitNow;
 window.resetVisitAttempts = resetVisitAttempts;
 window.selectExistingVisit = selectExistingVisit;
+window.toggleOfflineKv = toggleOfflineKv;
+window.toggleOfflineSelectAll = toggleOfflineSelectAll;
+window.onOfflineSearchInput = onOfflineSearchInput;
+window.startSelectedOfflineDownload = startSelectedOfflineDownload;
+window.closeOfflineDownloadScreen = closeOfflineDownloadScreen;
+window.startSelectedOfflineDownload = startSelectedOfflineDownload;
 
 // ================= SVG-ИКОНКИ (стиль Evernote) =================
 function iconHome(size) {
@@ -3238,44 +3275,10 @@ function iconGear(size) {
   </svg>`;
 }
 
-function iconArrowLeft(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M19 12H5"/>
-    <path d="M12 19l-7-7 7-7"/>
-  </svg>`;
-}
-
 function iconChevronRight(size) {
   const s = size || 24;
   return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <path d="M9 18l6-6-6-6"/>
-  </svg>`;
-}
-
-function iconEye(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-    <circle cx="12" cy="12" r="3"/>
-  </svg>`;
-}
-
-function iconSend(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M22 2L11 13"/>
-    <path d="M22 2l-7 20-4-9-9-4 20-7z"/>
-  </svg>`;
-}
-
-function iconRefresh(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M23 4v6h-6"/>
-    <path d="M1 20v-6h6"/>
-    <path d="M3.51 9a9 9 0 0114.85-3.36L23 10"/>
-    <path d="M1 14l4.64 4.36A9 9 0 0020.49 15"/>
   </svg>`;
 }
 
@@ -3284,25 +3287,6 @@ function iconX(size) {
   return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
     <path d="M18 6L6 18"/>
     <path d="M6 6l12 12"/>
-  </svg>`;
-}
-
-function iconTrash(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 6h18"/>
-    <path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
-    <path d="M10 11v6"/>
-    <path d="M14 11v6"/>
-  </svg>`;
-}
-
-function iconPlus(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 5v14"/>
-    <path d="M5 12h14"/>
   </svg>`;
 }
 
@@ -3321,20 +3305,5 @@ function iconCamera(size) {
   return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
     <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
     <circle cx="12" cy="13" r="4"/>
-  </svg>`;
-}
-
-function iconCheck(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M5 12.5l5 5L20 7"/>
-  </svg>`;
-}
-
-function iconArrowRight(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M5 12h14"/>
-    <path d="M12 5l7 7-7 7"/>
   </svg>`;
 }
