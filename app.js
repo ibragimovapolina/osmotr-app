@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.2';
+const APP_VERSION = '2.1.3';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -2224,7 +2224,6 @@ async function startSelectedOfflineDownload() {
   
   alert(`✅ Скачано квартир: ${successCount}. Всего фото: ${state.offlineProgress.totalPhotos}.`);
   closeOfflineDownloadScreen();
-}
 }
 function renderOfflineDownloadScreen(app) {
   const search = state.offlineSearch.toLowerCase().trim();
