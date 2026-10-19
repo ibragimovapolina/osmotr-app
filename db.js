@@ -1,14 +1,15 @@
-// ================= IndexedDB v2 =================
+// ================= IndexedDB v3 =================
 
 const DB_NAME = 'osmotr_db';
-const DB_VERSION = 2;
-const STORE_DRAFTS    = 'drafts';
-const STORE_REFERENCE = 'reference';
-const STORE_REMARKS   = 'remarks';
-const STORE_MARKS     = 'marks';
-const STORE_META      = 'meta';
-const STORE_VISITS    = 'visits';
-const STORE_PHOTOS    = 'photos';
+const DB_VERSION = 3; // Подняли с 2 до 3
+const STORE_DRAFTS         = 'drafts';
+const STORE_REFERENCE      = 'reference';
+const STORE_REMARKS        = 'remarks';
+const STORE_MARKS          = 'marks';
+const STORE_META           = 'meta';
+const STORE_VISITS         = 'visits';
+const STORE_PHOTOS         = 'photos';
+const STORE_OFFLINE_VISITS = 'offline_visits'; // Новое хранилище
 
 const DRAFT_KEY = 'current_draft';
 
@@ -47,6 +48,11 @@ function openDB() {
         const s = db.createObjectStore(STORE_PHOTOS, { keyPath: 'photoId' });
         s.createIndex('visitClientId', 'visitClientId', { unique: false });
         s.createIndex('status', 'status', { unique: false });
+      }
+      // Новое хранилище для скачанных осмотров
+      if (!db.objectStoreNames.contains(STORE_OFFLINE_VISITS)) {
+        const s = db.createObjectStore(STORE_OFFLINE_VISITS, { keyPath: 'clientId' });
+        s.createIndex('kvNumber', 'kvNumber', { unique: false });
       }
     };
   });
@@ -290,6 +296,38 @@ async function resetStuckSyncing(maxAgeMinutes) {
   return count;
 }
 
+// ================= OFFLINE VISITS =================
+async function saveOfflineVisit(visit) {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_OFFLINE_VISITS, 'readwrite');
+    tx.objectStore(STORE_OFFLINE_VISITS).put(visit);
+    return new Promise((resolve) => {
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    });
+  } catch (e) { console.warn('saveOfflineVisit:', e); return false; }
+}
+
+async function getOfflineVisitsByKv(kv) {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_OFFLINE_VISITS, 'readonly');
+    const idx = tx.objectStore(STORE_OFFLINE_VISITS).index('kvNumber');
+    const r = idx.getAll(String(kv).trim());
+    return (await req(r)) || [];
+  } catch (e) { return []; }
+}
+
+async function getAllOfflineVisits() {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_OFFLINE_VISITS, 'readonly');
+    const r = tx.objectStore(STORE_OFFLINE_VISITS).getAll();
+    return (await req(r)) || [];
+  } catch (e) { return []; }
+}
+
 // ================= PHOTOS =================
 async function addPhoto(photo) {
   try {
@@ -451,6 +489,7 @@ window.db = {
   addVisit, getVisit, updateVisit, getAllVisits, getPendingVisits, getSyncedVisits,
   getVisibleVisits, findVisitsByKv, hideVisit, unhideVisit, deleteVisit,
   resetStuckSyncing,
+  saveOfflineVisit, getOfflineVisitsByKv, getAllOfflineVisits, // Экспорт новых функций
   addPhoto, getPhoto, updatePhoto, getPhotosForVisit, getAllPhotos, deletePhoto,
   getPhotoCountsForVisit,
   getQueueStats,
