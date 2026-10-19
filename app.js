@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.9.4';
+const APP_VERSION = '1.9.5';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -45,7 +45,8 @@ const state = {
   offlineDownloadScreen: false, 
   offlineKvList: [],            
   offlineKvSelected: {},        
-  offlineSearch: '',            
+  offlineSearch: '',
+  offlineDownloadedMap: {},
   offlineDownloading: false,
   offlineProgress: { current: 0, total: 0, kv: '', photos: 0 },
   offlineShowProgressModal: false
@@ -2055,16 +2056,38 @@ async function openOfflineDownloadScreen() {
   state.offlineKvList = [];
   state.offlineKvSelected = {};
   state.offlineSearch = '';
-  render();
-  if (!navigator.onLine) { alert('Нет интернета. Подключитесь к Wi-Fi.'); return; }
+  
+  // Загружаем инфу о том, что уже скачано
+  try {
+    state.offlineDownloadedMap = await window.db.getAllOfflineVisitsInfo();
+  } catch (e) {
+    state.offlineDownloadedMap = {};
+  }
+
+  render(); // Рисуем экран сразу
+
+  if (!navigator.onLine) {
+    // Если нет сети, мы не сможем обновить список квартир с сервера, 
+    // но покажем те, что уже есть в памяти
+    return;
+  }
+
   try {
     const res = await apiGet('getAllVisitedApartments');
     let list = [];
     if (res && res.data && Array.isArray(res.data.data)) list = res.data.data;
     else if (res && res.data && Array.isArray(res.data)) list = res.data;
     else if (Array.isArray(res)) list = res;
-    state.offlineKvList = list;
-  } catch (e) { alert('Ошибка загрузки: ' + e.message); }
+    
+    // Объединяем список с сервера и то, что уже в памяти (на случай, если квартиры удалили с сервера, но они есть в кэше)
+    const allKvs = new Set([...list, ...Object.keys(state.offlineDownloadedMap)]);
+    state.offlineKvList = Array.from(allKvs).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    
+  } catch (e) {
+    console.warn('[offline] Ошибка загрузки списка с сервера:', e);
+    // Если сервер упал, показываем хотя бы то, что есть в памяти
+    state.offlineKvList = Object.keys(state.offlineDownloadedMap);
+  }
   render();
 }
 
@@ -2187,25 +2210,56 @@ function renderOfflineDownloadScreen(app) {
   const filtered = state.offlineKvList.filter(kv => kv.toLowerCase().includes(search));
   const visibleSelected = filtered.filter(kv => state.offlineKvSelected[kv]).length;
   const allVisibleSelected = filtered.length > 0 && visibleSelected === filtered.length;
+  
+  // Считаем общую статистику
+  const totalDownloaded = Object.keys(state.offlineDownloadedMap).length;
+
   app.innerHTML = `
     <div class="card">
-      <div class="step-header"><h2>Скачать для офлайна</h2><p>Выберите квартиры для скачивания.</p></div>
+      <div class="step-header">
+        <h2>Скачать для офлайна</h2>
+        <p>Уже скачано квартир: <b>${totalDownloaded}</b>.</p>
+      </div>
+      
       <div class="field-group">
         <input class="field-input" type="text" placeholder="Поиск по номеру..." value="${escapeHtml(state.offlineSearch)}" oninput="onOfflineSearchInput(this.value)">
       </div>
+
       <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
         <div style="font-size:13px; color:#7A7A7A;">Найдено: ${filtered.length}</div>
         <button class="btn btn-secondary" style="width:auto; padding:6px 14px; font-size:13px;" onclick="toggleOfflineSelectAll()">${allVisibleSelected ? 'Снять все' : 'Выбрать все'}</button>
       </div>
-      <div style="max-height: 300px; overflow-y: auto; background: #FAFAFA; border-radius: 12px; padding: 8px; margin-bottom: 16px;">
+
+      <div style="max-height: 400px; overflow-y: auto; background: #FAFAFA; border-radius: 12px; padding: 8px; margin-bottom: 16px;">
         ${filtered.length === 0 ? '<div style="text-align:center; padding:20px; color:#9AA0A6;">Список пуст</div>' : ''}
-        ${filtered.map(kv => `
-          <div style="display:flex; align-items:center; padding:12px; border-radius:10px; margin-bottom:6px; background:${state.offlineKvSelected[kv] ? '#E6F7EA' : '#fff'}; border: 2px solid ${state.offlineKvSelected[kv] ? '#00A82D' : 'transparent'}; cursor:pointer;" onclick="toggleOfflineKv('${escapeAttr(kv)}')">
-            <div style="width:24px; height:24px; border-radius:6px; border:2px solid ${state.offlineKvSelected[kv] ? '#00A82D' : '#D0D0D0'}; background:${state.offlineKvSelected[kv] ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px;">${state.offlineKvSelected[kv] ? '✓' : ''}</div>
-            <div style="font-size:15px; font-weight:600;">Квартира ${escapeHtml(kv)}</div>
-          </div>
-        `).join('')}
+        ${filtered.map(kv => {
+          const isSelected = state.offlineKvSelected[kv];
+          const downloadedInfo = state.offlineDownloadedMap[kv];
+          const isDownloaded = !!downloadedInfo;
+          
+          let downloadedDateStr = '';
+          if (isDownloaded && downloadedInfo.visitedAt) {
+            downloadedDateStr = new Date(downloadedInfo.visitedAt).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' });
+          }
+
+          return `
+            <div style="display:flex; align-items:center; padding:12px; border-radius:10px; margin-bottom:6px; background:${isSelected ? '#E6F7EA' : '#fff'}; border: 2px solid ${isSelected ? '#00A82D' : 'transparent'}; cursor:pointer; position:relative;" onclick="toggleOfflineKv('${escapeAttr(kv)}')">
+              
+              <div style="width:24px; height:24px; border-radius:6px; border:2px solid ${isSelected ? '#00A82D' : '#D0D0D0'}; background:${isSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0;">
+                ${isSelected ? '✓' : ''}
+              </div>
+              
+              <div style="flex:1;">
+                <div style="font-size:15px; font-weight:600;">Квартира ${escapeHtml(kv)}</div>
+                ${isDownloaded ? `<div style="font-size:11px; color:#00A82D; font-weight:600; margin-top:2px;">Скачано ${downloadedDateStr}</div>` : ''}
+              </div>
+
+              ${isDownloaded ? `<div style="font-size:20px; color:#00A82D; margin-left:8px;">📥</div>` : ''}
+            </div>
+          `;
+        }).join('')}
       </div>
+
       <button class="btn btn-primary btn-large" style="margin-bottom:10px;" onclick="startSelectedOfflineDownload()" ${visibleSelected === 0 ? 'disabled' : ''}>📥 Скачать выбранные (${visibleSelected})</button>
       <button class="btn btn-secondary" onclick="closeOfflineDownloadScreen()">← Назад</button>
     </div>
