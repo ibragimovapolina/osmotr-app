@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.8.2';
+const APP_VERSION = '1.8.3';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -260,14 +260,14 @@ function parseResponse(text) {
 // ================= РЕНДЕРИНГ =================
 function render() {
   const app = document.getElementById('app');
-  if (state.screen === 'loading') { app.innerHTML = '<div class="loading">Загрузка...</div>'; return; }
-  if (state.screen === 'error') {
-    app.innerHTML = `
-      <div class="error-box"><strong>Ошибка:</strong><br>${escapeHtml(state.errorMessage)}</div>
-      <button class="btn btn-secondary" onclick="location.reload()">Перезагрузить</button>
-    `;
-    return;
+  
+  // Если открыт офлайн-экран, показываем его ПЕРВЫМ
+  if (state.offlineDownloadScreen) {
+    return renderOfflineDownloadScreen(app);
   }
+
+  if (state.screen === 'loading') { app.innerHTML = '<div class="loading">Загрузка...</div>'; return; }
+  if (state.screen === 'error') { ... }
   if (state.screen === 'name')        return renderNameInput(app);
   if (state.screen === 'home')        return renderHome(app);
   if (state.screen === 'newVisitKv')  return renderNewVisitKv(app);
@@ -277,7 +277,7 @@ function render() {
   if (state.screen === 'queue')       return renderQueue(app);
   if (state.screen === 'visits')      return renderVisits(app);
   if (state.screen === 'settings')    return renderSettings(app);
-  
+}
   // Экран офлайн-скачивания
   if (state.offlineDownloadScreen) return renderOfflineDownloadScreen(app);
 }
@@ -2973,41 +2973,43 @@ async function fetchPhotoAsBlob(url) {
 
 // ================= ОФЛАЙН-СКАЧИВАНИЕ =================
 async function openOfflineDownloadScreen() {
+  // 1. Мгновенно переключаем экран
+  state.offlineDownloadScreen = true;
+  state.screen = 'settings'; // Оставляем фон
+  state.offlineKvList = [];
+  state.offlineKvSelected = {};
+  state.offlineSearch = '';
+  
+  // Рисуем экран СРАЗУ
+  render();
+
   if (!navigator.onLine) {
     alert('Нет интернета. Подключитесь к Wi-Fi.');
     return;
   }
-  
-  state.offlineDownloadScreen = true;
-  state.offlineKvList = [];
-  state.offlineKvSelected = {};
-  state.offlineSearch = '';
-  state.screen = 'settings';
-  render(); 
-  
+
+  // 2. Грузим данные
   try {
     const res = await apiGet('getAllVisitedApartments');
-    const data = (res && res.data) ? res.data : res;
-    
     let list = [];
-    // Достаем массив из любого формата, в котором он может прийти
-    if (Array.isArray(data)) {
-      list = data;
-    } else if (data && Array.isArray(data.data)) {
-      list = data.data; // Если сервер вернул {ok:true, data:[...]}
-    } else if (data && Array.isArray(data.data?.data)) {
-      list = data.data.data; // На всякий случай, если завернуто дважды
-    } else {
-      console.warn('[offline] Неизвестный формат данных от сервера:', data);
-    }
     
+    // Достаем массив из любого ответа
+    if (res && res.data && Array.isArray(res.data.data)) {
+      list = res.data.data;
+    } else if (res && res.data && Array.isArray(res.data)) {
+      list = res.data;
+    } else if (Array.isArray(res)) {
+      list = res;
+    }
+
     state.offlineKvList = list;
+    console.log('[offline] Загружено квартир:', list.length);
   } catch (e) {
-    console.warn('[offline download] Ошибка загрузки списка:', e.message);
-    alert('Не удалось загрузить список квартир: ' + e.message);
-    state.offlineDownloadScreen = false;
+    console.error('[offline] Ошибка:', e);
+    alert('Ошибка загрузки: ' + e.message);
   }
   
+  // 3. Перерисовываем с данными
   render();
 }
 function closeOfflineDownloadScreen() {
@@ -3110,7 +3112,6 @@ async function startSelectedOfflineDownload() {
 }
 
 function renderOfflineDownloadScreen(app) {
-  console.log('[offline screen] Отрисовка. Всего квартир:', state.offlineKvList.length);
   const search = state.offlineSearch.toLowerCase().trim();
   const filtered = state.offlineKvList.filter(kv => kv.toLowerCase().includes(search));
   
@@ -3121,51 +3122,45 @@ function renderOfflineDownloadScreen(app) {
     <div class="card">
       <div class="step-header">
         <h2>Скачать для офлайна</h2>
-        <p>Выберите квартиры, данные по которым нужно иметь под рукой без интернета.</p>
+        <p>Выберите квартиры для скачивания.</p>
       </div>
 
       <div class="field-group">
         <input class="field-input" type="text" placeholder="Поиск по номеру..." 
                value="${escapeHtml(state.offlineSearch)}" 
-               oninput="onOfflineSearchInput(this.value)"
-               ${state.offlineDownloading ? 'disabled' : ''}>
+               oninput="onOfflineSearchInput(this.value)">
       </div>
 
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-        <div style="font-size:13px; color:var(--text-secondary);">
-          Найдено: ${filtered.length}. Выбрано: ${visibleSelected}.
-        </div>
-        <button class="btn btn-secondary" style="width:auto; min-height:36px; padding:6px 14px; font-size:13px;" 
-                onclick="toggleOfflineSelectAll()" ${state.offlineDownloading ? 'disabled' : ''}>
+      <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
+        <div style="font-size:13px; color:#7A7A7A;">Найдено: ${filtered.length}</div>
+        <button class="btn btn-secondary" style="width:auto; padding:6px 14px; font-size:13px;" 
+                onclick="toggleOfflineSelectAll()">
           ${allVisibleSelected ? 'Снять все' : 'Выбрать все'}
         </button>
       </div>
 
-      <div class="offline-kv-list">
-        ${filtered.length === 0 ? '<div class="hint">Ничего не найдено</div>' : ''}
-        ${filtered.map(kv => {
-          const isSel = state.offlineKvSelected[kv];
-          return `
-            <div class="offline-kv-item ${isSel ? 'selected' : ''}" onclick="toggleOfflineKv('${escapeAttr(kv)}')">
-              <div class="offline-kv-checkbox ${isSel ? 'checked' : ''}">
-                ${isSel ? '✓' : ''}
-              </div>
-              <div class="offline-kv-number">Квартира ${escapeHtml(kv)}</div>
+      <div style="max-height: 300px; overflow-y: auto; background: #FAFAFA; border-radius: 12px; padding: 8px; margin-bottom: 16px;">
+        ${filtered.length === 0 ? '<div style="text-align:center; padding:20px; color:#9AA0A6;">Список пуст</div>' : ''}
+        ${filtered.map(kv => `
+          <div style="display:flex; align-items:center; padding:12px; border-radius:10px; margin-bottom:6px; background:${state.offlineKvSelected[kv] ? '#E6F7EA' : '#fff'}; border: 2px solid ${state.offlineKvSelected[kv] ? '#00A82D' : 'transparent'}; cursor:pointer;" onclick="toggleOfflineKv('${escapeAttr(kv)}')">
+            <div style="width:24px; height:24px; border-radius:6px; border:2px solid ${state.offlineKvSelected[kv] ? '#00A82D' : '#D0D0D0'}; background:${state.offlineKvSelected[kv] ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px;">
+              ${state.offlineKvSelected[kv] ? '✓' : ''}
             </div>
-          `;
-        }).join('')}
+            <div style="font-size:15px; font-weight:600;">Квартира ${escapeHtml(kv)}</div>
+          </div>
+        `).join('')}
       </div>
 
-      <button class="btn btn-primary btn-large" style="margin-top:16px;" 
+      <button class="btn btn-primary btn-large" style="margin-bottom:10px;" 
               onclick="startSelectedOfflineDownload()" 
-              ${visibleSelected === 0 || state.offlineDownloading ? 'disabled' : ''}>
+              ${visibleSelected === 0 ? 'disabled' : ''}>
         📥 Скачать выбранные (${visibleSelected})
       </button>
+      
       <button class="btn btn-secondary" onclick="closeOfflineDownloadScreen()">← Назад</button>
     </div>
   `;
 }
-
 function renderOfflineProgressModal() {
   const existing = document.getElementById('offlineProgressBackdrop');
   if (existing) existing.remove();
