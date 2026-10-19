@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.9.5';
+const APP_VERSION = '1.9.6';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -895,33 +895,37 @@ function onKvInput(value) {
   const result = document.getElementById('kvResult');
   if (btn) btn.disabled = true;
   if (result) result.innerHTML = '<div class="hint">Проверяем…</div>';
+
   if (_kvCheckTimeout) clearTimeout(_kvCheckTimeout);
+  
   _kvCheckTimeout = setTimeout(async () => {
     const kv = String(value || '').trim();
     if (!kv) { if (result) result.innerHTML = ''; return; }
+    
     try {
+      // 1. СНАЧАЛА проверяем квартиру в справочнике
       const res = await checkApartmentSmart(kv);
       const data = res;
+
       if (data && data.found) {
         state.form.apartment = data.data;
-        let localVisits = [];
-        try { localVisits = await window.db.findVisitsByKv(kv); } catch (e) {}
-        if (localVisits.length > 0) {
-          const latest = localVisits[0];
-          const dt = latest.createdAt ? new Date(latest.createdAt).toLocaleString('ru-RU') : '—';
-          const userName = (latest.payload && latest.payload.email) || '—';
-          const type = latest.status === 'synced' ? 'synced' : 'pending';
-          state.kvWarning = { type, date: dt, userName, source: 'local', count: localVisits.length };
-        } else state.kvWarning = null;
-        renderKvResultBlock();
-        if (btn) btn.disabled = false;
-        if (navigator.onLine) {
-          checkServerVisits(kv).catch(() => {});
-          loadExistingVisitsList(kv).catch(() => {});
+        
+        // 2. ЗАТЕМ грузим список прошлых осмотров (с сервера или локально)
+        try {
+          await loadExistingVisitsList(kv); 
+        } catch (e) {
+          console.warn('Не удалось загрузить прошлые осмотры:', e);
+          state.existingVisits = [];
         }
+        
+        // 3. Отрисовываем ВСЁ ВМЕСТЕ только один раз, в самом конце
+        renderKvResultBlock();
+        
+        if (btn) btn.disabled = false;
       } else {
         state.form.apartment = null;
         state.kvWarning = null;
+        state.existingVisits = [];
         if (result) result.innerHTML = `<div class="apartment-not-found">⚠ Квартира "${escapeHtml(kv)}" не найдена в справочнике.</div>`;
         removeKvWarningBlock();
       }
