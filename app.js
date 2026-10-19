@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.9.1';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1917,28 +1917,49 @@ async function loadExistingVisitsList(kv) {
 
 async function selectExistingVisit(clientId) {
   if (state.loadingExisting) return;
+
   if (state.selectedVisitId === clientId) {
     state.selectedVisitId = null;
     state.existingVisit = null;
     renderKvResultBlock();
     return;
   }
+
   state.selectedVisitId = clientId;
   state.loadingExisting = true;
   renderKvResultBlock();
+
   try {
+    let visitData = null;
+
     if (!navigator.onLine) {
+      // Пытаемся достать из офлайна
       const offline = await window.db.getOfflineVisitsByKv(state.form.kvNumber);
       const found = offline.find(v => v.clientId === clientId);
       if (!found) throw new Error('Осмотр не найден в памяти телефона. Скачайте его дома.');
-      state.existingVisit = { found: true, clientId, payload: found.payload };
+      visitData = { found: true, clientId, payload: found.payload };
     } else {
+      // Грузим с сервера
       const res = await apiGet('getVisitById', { clientId: clientId }, 15000);
-      const data = (res && res.data) ? res.data : res;
-      if (!data || !data.found) throw new Error('Осмотр не найден');
-      state.existingVisit = data;
-      await downloadVisitPhotos(data);
+      visitData = (res && res.data) ? res.data : res;
+
+      if (!visitData || !visitData.found) throw new Error('Осмотр не найден на сервере');
+      
+      // Скачиваем фото к себе на телефон
+      await downloadVisitPhotos(visitData);
     }
+
+    // Сохраняем/обновляем осмотр в офлайн-хранилище
+    await window.db.saveOfflineVisit({
+      clientId: visitData.clientId,
+      kvNumber: state.form.kvNumber,
+      visitedAt: visitData.visitedAt,
+      email: visitData.email,
+      payload: visitData.payload
+    });
+
+    state.existingVisit = visitData;
+    
   } catch (err) {
     console.error('[selectExistingVisit]', err);
     alert('Ошибка загрузки: ' + err.message);
@@ -1952,40 +1973,87 @@ async function selectExistingVisit(clientId) {
 
 async function downloadVisitPhotos(visitData, onProgress) {
   if (!visitData || !visitData.payload) return;
+
   const payload = visitData.payload;
   const kv = payload.kvNumber || '';
   const tasks = [];
+
+  // Собираем все URL'ы. Скачиваем всё, что имеет ссылку, но ещё не имеет photoId.
   Object.keys(payload.results || {}).forEach(stateKey => {
     const rs = payload.results[stateKey];
-    (rs.commonPhotos || []).forEach((p, i) => { if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey, variantKey: '', idx: i, isCommon: true }); });
+    (rs.commonPhotos || []).forEach((p, i) => {
+      if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey, variantKey: '', idx: i, isCommon: true });
+    });
     Object.keys(rs.photosByVariant || {}).forEach(variant => {
-      (rs.photosByVariant[variant] || []).forEach((p, i) => { if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey, variantKey: variant, idx: i, isCommon: false }); });
+      (rs.photosByVariant[variant] || []).forEach((p, i) => {
+        if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey, variantKey: variant, idx: i, isCommon: false });
+      });
     });
   });
-  (payload.extraPhotos || []).forEach((p, i) => { if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey: '__extra__', variantKey: '', idx: i, isCommon: false, isExtra: true }); });
-  if (!tasks.length) return;
+
+  (payload.extraPhotos || []).forEach((p, i) => {
+    if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey: '__extra__', variantKey: '', idx: i, isCommon: false, isExtra: true });
+  });
+
+  if (!tasks.length) {
+    console.log('[downloadVisitPhotos] Нет фото для скачивания');
+    return;
+  }
+  
+  console.log('[downloadVisitPhotos] Найдено фото для скачивания:', tasks.length);
   let downloaded = 0;
+
   for (let i = 0; i < tasks.length; i++) {
     const task = tasks[i];
     try {
+      // Используем fetchPhotoAsBlob, который скачивает через GAS (base64)
       const blob = await fetchPhotoAsBlob(task.url);
-      if (!blob) continue;
+      if (!blob) {
+        console.warn('[downloadVisitPhotos] Не удалось получить blob для:', task.url);
+        continue;
+      }
+
       const photoId = window.db.uuid();
-      const fileName = buildFileName(task.stateKey.split('.')[0] || 'server', task.stateKey.split('.')[1] || 'photo', task.idx + 1);
+      const fileName = buildFileName(
+        task.stateKey.split('.')[0] || 'server',
+        task.stateKey.split('.')[1] || 'photo',
+        task.idx + 1
+      );
       const localUrl = URL.createObjectURL(blob);
       const remoteData = { url: task.url };
-      await window.db.addPhoto({ photoId: photoId, visitClientId: visitData.clientId, stateKey: task.stateKey, variantKey: task.variantKey, fileName: fileName, kvNumber: kv, blob: blob, status: 'pending', attempts: 0, lastError: '', remote: remoteData, localUrl: localUrl, fromServer: true });
+
+      await window.db.addPhoto({
+        photoId: photoId,
+        visitClientId: visitData.clientId,
+        stateKey: task.stateKey,
+        variantKey: task.variantKey,
+        fileName: fileName,
+        kvNumber: kv,
+        blob: blob,
+        status: 'pending',
+        attempts: 0,
+        lastError: '',
+        remote: remoteData,
+        localUrl: localUrl,
+        fromServer: true
+      });
+
       const rs = task.isExtra ? null : payload.results[task.stateKey];
-      if (task.isExtra) payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
-      else if (rs) {
+      if (task.isExtra) {
+        payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
+      } else if (rs) {
         const arr = task.isCommon ? (rs.commonPhotos || []) : (rs.photosByVariant[task.variantKey] || []);
         arr[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
         if (task.isCommon) rs.commonPhotos = arr;
         else rs.photosByVariant[task.variantKey] = arr;
       }
+      
       downloaded++;
       if (onProgress) onProgress(downloaded);
-    } catch (err) { console.warn('[downloadVisitPhotos] Ошибка фото:', task.url, err.message); }
+      
+    } catch (err) {
+      console.warn('[downloadVisitPhotos] Ошибка фото:', task.url, err.message);
+    }
     await new Promise(r => setTimeout(r, 200));
   }
 }
