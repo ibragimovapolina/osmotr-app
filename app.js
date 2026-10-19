@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.9.1';
+const APP_VERSION = '1.9.2';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1932,31 +1932,35 @@ async function selectExistingVisit(clientId) {
   try {
     let visitData = null;
 
-    if (!navigator.onLine) {
-      // Пытаемся достать из офлайна
-      const offline = await window.db.getOfflineVisitsByKv(state.form.kvNumber);
-      const found = offline.find(v => v.clientId === clientId);
-      if (!found) throw new Error('Осмотр не найден в памяти телефона. Скачайте его дома.');
+    // 1. Сначала всегда пытаемся взять из офлайн-хранилища (там уже есть фото!)
+    const offline = await window.db.getOfflineVisitsByKv(state.form.kvNumber);
+    const found = offline.find(v => v.clientId === clientId);
+    
+    if (found) {
+      console.log('[selectExistingVisit] Нашли осмотр в памяти телефона');
       visitData = { found: true, clientId, payload: found.payload };
-    } else {
-      // Грузим с сервера
+    } 
+    // 2. Если в памяти нет, и есть интернет — идем на сервер
+    else if (navigator.onLine) {
+      console.log('[selectExistingVisit] В памяти нет, грузим с сервера...');
       const res = await apiGet('getVisitById', { clientId: clientId }, 15000);
-      visitData = (res && res.data) ? res.data : res;
+      const data = (res && res.data) ? res.data : res;
 
-      if (!visitData || !visitData.found) throw new Error('Осмотр не найден на сервере');
+      if (!data || !data.found) throw new Error('Осмотр не найден на сервере');
       
-      // Скачиваем фото к себе на телефон
+      visitData = data;
+      // Скачиваем фото и сохраняем
       await downloadVisitPhotos(visitData);
+      await window.db.saveOfflineVisit({
+        clientId: visitData.clientId,
+        kvNumber: state.form.kvNumber,
+        visitedAt: visitData.visitedAt,
+        email: visitData.email,
+        payload: visitData.payload
+      });
+    } else {
+      throw new Error('Нет интернета, и нет скачанных данных для этой квартиры.');
     }
-
-    // Сохраняем/обновляем осмотр в офлайн-хранилище
-    await window.db.saveOfflineVisit({
-      clientId: visitData.clientId,
-      kvNumber: state.form.kvNumber,
-      visitedAt: visitData.visitedAt,
-      email: visitData.email,
-      payload: visitData.payload
-    });
 
     state.existingVisit = visitData;
     
