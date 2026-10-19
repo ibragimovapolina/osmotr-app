@@ -1,32 +1,15 @@
 // ================= Движок синхронизации v8 =================
-// Особенности:
-//   - Проверка доступности API (ping 7 сек) перед каждой отправкой.
-//   - Не проверяем в фоне (visibilityState !== 'visible').
-//   - Если API недоступен — НЕ тратим попытки, ждём 2 минуты.
-//   - Экспоненциальный backoff между попытками.
-//   - Фото — по одному с паузой.
-//   - Сохраняем детали ping в meta.pingDetail для диагностики.
-
-const SYNC_INTERVAL_OK_MS = 30 * 1000;      // обычная сеть — проверка раз в 30 сек
-const SYNC_INTERVAL_BAD_MS = 2 * 60 * 1000; // плохая сеть — раз в 2 минуты
-const REQUEST_TIMEOUT_MS = 60 * 1000;       // фото/осмотр — 60 сек
-const PING_TIMEOUT_MS = 7000;               // ping — 7 сек (было 2.5)
+const SYNC_INTERVAL_OK_MS = 30 * 1000;
+const SYNC_INTERVAL_BAD_MS = 2 * 60 * 1000;
+const REQUEST_TIMEOUT_MS = 60 * 1000;
+const PING_TIMEOUT_MS = 7000;
 const PHOTO_PAUSE_MS = 500;
 
-const RETRY_DELAYS = [
-  10 * 1000,
-  30 * 1000,
-  60 * 1000,
-  5 * 60 * 1000,
-  15 * 60 * 1000,
-  60 * 60 * 1000
-];
+const RETRY_DELAYS = [10 * 1000, 30 * 1000, 60 * 1000, 5 * 60 * 1000, 15 * 60 * 1000, 60 * 60 * 1000];
 
 let _syncRunning = false;
 let _syncTimer = null;
 let _wakeLock = null;
-
-// ================= ПУБЛИЧНЫЙ API =================
 
 async function syncNow() {
   if (_syncRunning) return { skipped: true, reason: 'already-running' };
@@ -37,27 +20,20 @@ async function syncNow() {
 
   const result = { sent: 0, failed: 0, photos: 0, skipped: 0, errors: [] };
   try {
-    // === ПРОВЕРКА ДОСТУПНОСТИ API ===
     const reachable = await checkApiReachable();
-
-    // null = приложение в фоне, не портим meta, просто откладываем
     if (reachable === null) {
-      console.log('[sync] приложение в фоне — откладываем');
       result.skipped = 1;
       result.reason = 'background';
       return result;
     }
 
     await window.db.setMeta('apiReachable', { ok: reachable, at: Date.now() });
-
     if (!reachable) {
-      console.log('[sync] API недоступен (белые списки?). Пропускаем отправку.');
       result.skipped = 1;
       result.reason = 'api-unreachable';
       return result;
     }
 
-    // === ОБЫЧНАЯ СИНХРОНИЗАЦИЯ ===
     if (window.db.resetStuckSyncing) await window.db.resetStuckSyncing(3);
 
     const pending = await window.db.getPendingVisits();
@@ -67,13 +43,11 @@ async function syncNow() {
       if (!navigator.onLine) break;
       if (!shouldRetryNow(visit)) { result.skipped++; continue; }
 
-      // Перед каждым осмотром — быстрая проверка связи
       if (result.sent > 0) {
         const stillReachable = await checkApiReachable();
-        if (stillReachable === null) break; // ушли в фон
+        if (stillReachable === null) break;
         await window.db.setMeta('apiReachable', { ok: stillReachable, at: Date.now() });
         if (!stillReachable) {
-          console.log('[sync] API пропал в середине. Останавливаемся.');
           result.reason = 'api-lost';
           break;
         }
@@ -104,12 +78,8 @@ async function syncNow() {
   return result;
 }
 
-// Проверка доступности API
-// Возвращает: true (ok), false (fail), null (в фоне — не проверяли)
 async function checkApiReachable() {
-  if (document.visibilityState !== 'visible') {
-    return null;
-  }
+  if (document.visibilityState !== 'visible') return null;
 
   const t0 = Date.now();
   const detail = { at: Date.now(), ok: false, elapsed: 0, status: 0, body: '', error: '' };
@@ -119,11 +89,7 @@ async function checkApiReachable() {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PING_TIMEOUT_MS);
     try {
-      const response = await fetch(url, {
-        method: 'GET',
-        signal: controller.signal,
-        cache: 'no-store'
-      });
+      const response = await fetch(url, { method: 'GET', signal: controller.signal, cache: 'no-store' });
       detail.status = response.status;
       detail.elapsed = Date.now() - t0;
 
@@ -134,21 +100,18 @@ async function checkApiReachable() {
       }
       const text = await response.text();
       detail.body = String(text).substring(0, 300);
-
       const lower = detail.body.toLowerCase();
       const ok = lower.indexOf('pong') !== -1 || lower.indexOf('"ok":true') !== -1;
       detail.ok = ok;
       await savePingDetail(detail);
-      console.log('[ping]', ok ? '✅' : '❌', detail.elapsed + 'мс', detail.body.substring(0, 100));
       return ok;
     } finally {
       clearTimeout(timer);
     }
   } catch (e) {
     detail.elapsed = Date.now() - t0;
-    detail.error = e.name === 'AbortError' ? 'timeout (' + PING_TIMEOUT_MS + 'мс)' : (e.message || String(e));
+    detail.error = e.name === 'AbortError' ? 'timeout' : (e.message || String(e));
     await savePingDetail(detail);
-    console.warn('[ping] ошибка:', detail.error);
     return false;
   }
 }
@@ -230,7 +193,6 @@ function stopAutoSync() {
 }
 
 function onOnline() {
-  console.log('[sync] Сеть появилась — пробуем отправить');
   setTimeout(async () => {
     try { await syncNow(); } catch (e) {}
     scheduleNext();
@@ -238,13 +200,11 @@ function onOnline() {
 }
 
 function onOffline() {
-  console.log('[sync] Сеть пропала');
   notifyUI();
 }
 
 function onVisibilityChange() {
   if (document.visibilityState === 'visible' && navigator.onLine) {
-    console.log('[sync] Приложение активно — пробуем отправить');
     setTimeout(async () => {
       try { await syncNow(); } catch (e) {}
       scheduleNext();
@@ -258,10 +218,7 @@ function notifyUI() {
   }
 }
 
-// ================= ОТПРАВКА ОДНОГО ОСМОТРА =================
-
 async function syncVisit(visit) {
-  console.log('[sync] Начинаем осмотр', visit.clientId, 'кв.', visit.payload && visit.payload.kvNumber);
   await window.db.updateVisit(visit.clientId, {
     status: 'syncing',
     syncingStartedAt: new Date().toISOString(),
@@ -269,7 +226,6 @@ async function syncVisit(visit) {
   });
 
   let photosUploaded = 0;
-
   const photos = await window.db.getPhotosForVisit(visit.clientId);
   const totalPhotos = photos.length;
 
@@ -303,8 +259,6 @@ async function syncVisit(visit) {
         progress: { stage: 'photos', current: i + 1, total: totalPhotos }
       });
       notifyUI();
-
-      console.log('[sync] Фото', (i + 1) + '/' + totalPhotos, photo.fileName, '→', remote.fileId);
     } catch (err) {
       await window.db.updatePhoto(photo.photoId, {
         status: 'error',
@@ -334,7 +288,6 @@ async function syncVisit(visit) {
     throw new Error('Сервер вернул ошибку: ' + ((data && data.error) || 'неизвестно'));
   }
 
-  // Двойная проверка
   await sleep(500);
   try {
     const check = await apiGet('checkVisitExistsByClientId', { clientId: visit.clientId });
@@ -342,12 +295,10 @@ async function syncVisit(visit) {
     if (!checkData || !checkData.found) {
       throw new Error('Отправка не подтверждена: строка не найдена в таблице по ClientID');
     }
-    console.log('[sync] ✅ Двойная проверка пройдена. Строка:', checkData.row);
   } catch (checkErr) {
     if (String(checkErr.message).indexOf('не подтверждена') !== -1) {
       throw checkErr;
     }
-    console.warn('[sync] Проверка не удалась (сеть):', checkErr.message);
   }
 
   await window.db.updateVisit(visit.clientId, {
@@ -361,7 +312,6 @@ async function syncVisit(visit) {
     await window.db.deletePhoto(p.photoId);
   }
 
-  console.log('[sync] ✅ Осмотр отправлен и подтверждён:', visit.clientId, 'строка', (data && data.row));
   return { photosUploaded };
 }
 
@@ -389,6 +339,26 @@ function buildPayloadWithPhotos(originalPayload, photoMap) {
     if (!rs.photosByVariant) rs.photosByVariant = {};
 
     const bucket = photoMap[stateKey];
+    
+    // Сначала сохраняем ВСЕ существующие старые фото (из remote)
+    const existingCommon = (rs.commonPhotos || []).filter(p => p.remote && p.remote.url);
+    const existingVariants = {};
+    Object.keys(rs.photosByVariant || {}).forEach(v => {
+      existingVariants[v] = (rs.photosByVariant[v] || []).filter(p => p.remote && p.remote.url);
+    });
+
+    // Очищаем и заново заполняем
+    rs.commonPhotos = [];
+    rs.photosByVariant = rs.photosByVariant || {};
+
+    // Возвращаем старые
+    existingCommon.forEach(p => rs.commonPhotos.push(p));
+    Object.keys(existingVariants).forEach(v => {
+      if (!rs.photosByVariant[v]) rs.photosByVariant[v] = [];
+      existingVariants[v].forEach(p => rs.photosByVariant[v].push(p));
+    });
+
+    // Добавляем новые
     (bucket.common || []).forEach(r => {
       rs.commonPhotos.push({ fileId: r.fileId, url: r.url, name: r.name });
     });
@@ -403,7 +373,7 @@ function buildPayloadWithPhotos(originalPayload, photoMap) {
     results[stateKey] = rs;
   });
 
-  const extraPhotos = (originalPayload.extraPhotos || []).filter(p => p && p.url)
+  const extraPhotos = (originalPayload.extraPhotos || []).filter(p => p && (p.url || (p.remote && p.remote.url)))
     .concat(((photoMap['__extra__'] && photoMap['__extra__'].common) || []).map(r => ({
       fileId: r.fileId, url: r.url, name: r.name
     })));
@@ -413,8 +383,6 @@ function buildPayloadWithPhotos(originalPayload, photoMap) {
     extraPhotos: extraPhotos
   });
 }
-
-// ================= HTTP =================
 
 async function fetchWithTimeout(url, options, timeoutMs) {
   const controller = new AbortController();
@@ -443,12 +411,7 @@ async function uploadPhotoPost(blob, fileName, kvNumber) {
   const response = await fetchWithTimeout(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      action: 'uploadPhoto',
-      base64: base64,
-      fileName: fileName,
-      kvNumber: kvNumber
-    })
+    body: JSON.stringify({ action: 'uploadPhoto', base64: base64, fileName: fileName, kvNumber: kvNumber })
   }, REQUEST_TIMEOUT_MS);
   if (!response.ok) throw new Error('HTTP ' + response.status);
   const text = await response.text();
@@ -475,29 +438,21 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ================= WAKE LOCK =================
-
 async function requestWakeLock() {
   if (!('wakeLock' in navigator)) return;
   try {
     if (_wakeLock) return;
     _wakeLock = await navigator.wakeLock.request('screen');
     _wakeLock.addEventListener('release', () => { _wakeLock = null; });
-    console.log('[sync] Wake Lock включён');
-  } catch (e) {
-    console.warn('[sync] Wake Lock не удалось:', e.message);
-  }
+  } catch (e) {}
 }
 
 function releaseWakeLock() {
   if (_wakeLock) {
     _wakeLock.release().catch(() => {});
     _wakeLock = null;
-    console.log('[sync] Wake Lock выключен');
   }
 }
-
-// ================= ЭКСПОРТ =================
 
 window.sync = {
   syncNow,
