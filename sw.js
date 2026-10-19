@@ -4,7 +4,7 @@
 // ⚠️ При обновлении приложения МЕНЯЙТЕ SW_VERSION (например, '1.1.5').
 // Это автоматически сбросит старый кэш у всех пользователей.
 
-const SW_VERSION = '1.9.6';
+const SW_VERSION = '2.0.0';
 const CACHE_NAME = 'osmotr-' + SW_VERSION;
 
 const PRECACHE_URLS = [
