@@ -225,6 +225,9 @@ async function syncVisit(visit) {
     progress: { stage: 'photos', current: 0, total: 0 }
   });
 
+  // ДАЕМ БАЗЕ 1 СЕКУНДУ, ЧТОБЫ ФОНОВЫЕ ЗАПИСИ ФОТО ЗАВЕРШИЛИСЬ
+  await new Promise(r => setTimeout(r, 1000)); 
+
   let photosUploaded = 0;
   const photos = await window.db.getPhotosForVisit(visit.clientId);
   const totalPhotos = photos.length;
