@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.0.4';
+const APP_VERSION = '2.0.5';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -2199,8 +2199,8 @@ async function startSelectedOfflineDownload() {
             const textEl = document.getElementById('offlineProgressText');
             if (textEl) textEl.textContent = 'Сохранение в память...';
             
-            // Даем браузеру 100 мс, чтобы отрисовать текст, прежде чем он зависнет на записи
-            await new Promise(r => setTimeout(r, 100));
+            // Даем браузеру 1000 мс, чтобы отрисовать текст, прежде чем он зависнет на записи
+            await new Promise(r => setTimeout(r, 1000));
 
             // 3. Записываем в IndexedDB
             await window.db.saveOfflineVisit({
