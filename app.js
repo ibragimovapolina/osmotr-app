@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.2.6';
+const APP_VERSION = '1.3.0';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -35,7 +35,11 @@ const state = {
   photoLightbox: null,
   queueBackupBusy: false,
   queueBackupMsg: null
-};
+  existingVisits: [],     // массив прошлых осмотров
+  selectedVisitId: null,  // выбранный для загрузки
+  loadingExisting: false, // флаг загрузки
+  existingVisit: null,    // загруженный осмотр
+  };
 
 // Флаг защиты от двойного клика по «удалить фото»
 let _deletingPhoto = false;
@@ -1302,14 +1306,18 @@ function onKvInput(value) {
   _kvCheckTimeout = setTimeout(async () => {
     const kv = String(value || '').trim();
     if (!kv) { if (result) result.innerHTML = ''; return; }
+    
     try {
       const res = await checkApartmentSmart(kv);
       const data = res;
 
       if (data && data.found) {
         state.form.apartment = data.data;
+        
+        // Проверяем локальные осмотры (в очереди на телефоне)
         let localVisits = [];
         try { localVisits = await window.db.findVisitsByKv(kv); } catch (e) {}
+        
         if (localVisits.length > 0) {
           const latest = localVisits[0];
           const dt = latest.createdAt ? new Date(latest.createdAt).toLocaleString('ru-RU') : '—';
@@ -1319,10 +1327,15 @@ function onKvInput(value) {
         } else {
           state.kvWarning = null;
         }
+        
         renderKvResultBlock();
         if (btn) btn.disabled = false;
 
-        if (navigator.onLine) checkServerVisits(kv).catch(() => {});
+        // Если есть интернет — грузим данные с сервера
+        if (navigator.onLine) {
+          checkServerVisits(kv).catch(() => {});
+          loadExistingVisitsList(kv).catch(() => {}); // ← НОВАЯ СТРОКА
+        }
       } else {
         state.form.apartment = null;
         state.kvWarning = null;
@@ -1358,8 +1371,9 @@ function renderKvResultBlock() {
   const result = document.getElementById('kvResult');
   if (!result) return;
   const apt = state.form.apartment;
-  if (!apt) { result.innerHTML = ''; removeKvWarningBlock(); return; }
-  result.innerHTML = `
+  if (!apt) { result.innerHTML = ''; return; }
+
+  let html = `
     <div class="apartment-preview">
       <div class="apartment-preview-title">✓ Найдено в справочнике</div>
       <div class="apartment-preview-grid">
@@ -1370,38 +1384,42 @@ function renderKvResultBlock() {
       </div>
     </div>
   `;
-  const warning = state.kvWarning;
-  let warningEl = document.getElementById('kvWarningBlock');
-  if (warning) {
-    let prefix;
-    if (warning.source === 'server') {
-      const times = warning.count > 1 ? ` (${warning.count} раза)` : '';
-      prefix = `<strong>⚠ Квартира уже осматривалась${times}.</strong>`;
-    } else {
-      if (warning.type === 'synced') prefix = '<strong>⚠ Вы уже осматривали эту квартиру.</strong>';
-      else prefix = '<strong>⏳ Квартира уже в очереди у вас.</strong>';
-    }
-    const warningHtml = `
-      <div class="kv-warning">
-        ${prefix}<br>
-        Дата: ${escapeHtml(warning.date)}<br>
-        Осмотрщик: ${escapeHtml(warning.userName)}<br><br>
-        Вы можете осмотреть её ещё раз — ничего не блокируется.
-      </div>
-    `;
-    if (warningEl) warningEl.innerHTML = warningHtml;
-    else {
-      const div = document.createElement('div');
-      div.id = 'kvWarningBlock';
-      div.innerHTML = warningHtml;
-      const parent = result.parentNode;
-      parent.insertBefore(div, result.nextSibling);
-    }
-  } else {
-    removeKvWarningBlock();
-  }
-}
 
+  // Если есть прошлые осмотры — показываем список
+  if (state.existingVisits && state.existingVisits.length > 0) {
+    html += `<div class="existing-visits-block">
+      <div class="existing-visits-title">📋 Эта квартира уже осматривалась</div>
+      <div class="existing-visits-hint">Выберите осмотр, чтобы загрузить данные для дополнения:</div>`;
+
+    state.existingVisits.forEach((v, i) => {
+      const dt = v.visitedAt ? new Date(v.visitedAt).toLocaleString('ru-RU', {
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      }) : '—';
+      const isSelected = state.selectedVisitId === v.clientId;
+
+      html += `
+        <button class="existing-visit-item ${isSelected ? 'selected' : ''}"
+                onclick="selectExistingVisit('${escapeAttr(v.clientId)}')"
+                ${state.loadingExisting ? 'disabled' : ''}>
+          <div class="existing-visit-info">
+            <div class="existing-visit-date">${escapeHtml(dt)}</div>
+            <div class="existing-visit-email">${escapeHtml(v.email || '—')}</div>
+          </div>
+          ${isSelected
+            ? `<div class="existing-visit-check">${state.loadingExisting ? '⏳' : '✓'}</div>`
+            : `<div class="existing-visit-arrow">›</div>`}
+        </button>
+      `;
+    });
+
+    html += `<div class="existing-visits-note">
+      ⓘ Новый осмотр запишется в отдельную строку. История сохранится.
+    </div></div>`;
+  }
+
+  result.innerHTML = html;
+}
 function removeKvWarningBlock() {
   const el = document.getElementById('kvWarningBlock');
   if (el) el.remove();
@@ -1431,6 +1449,27 @@ async function checkApartmentSmart(kv) {
 
 function onKvNext() {
   if (!state.form.apartment) return;
+
+  // Если выбран прошлый осмотр — восстанавливаем данные
+  if (state.existingVisit && state.existingVisit.payload) {
+    const prev = state.existingVisit.payload;
+
+    state.form.results = prev.results || {};
+    state.form.comments = prev.comments || '';
+    state.form.extraPhotos = prev.extraPhotos || [];
+
+    // Новый clientId — НОВАЯ СТРОКА в таблице (сохраняем историю)
+    state.draftId = window.db.uuid();
+
+    // Запоминаем источник
+    state.form.sourceVisitId = state.existingVisit.clientId;
+
+    console.log('[onKvNext] Загружены данные прошлого осмотра. Новый clientId:', state.draftId);
+  } else {
+    state.draftId = window.db.uuid();
+    state.form.sourceVisitId = null;
+  }
+
   state.screen = 'newVisitRef';
   render();
   autoSave();
@@ -2166,9 +2205,14 @@ async function submitVisit() {
       email: state.user.name || 'осмотрщик',
       kvNumber: state.form.kvNumber,
       results: cleanResults,
-      extraPhotos: (state.form.extraPhotos || []).map(p => ({ photoId: p.photoId, name: p.name })),
+      extraPhotos: (state.form.extraPhotos || []).map(p => ({
+        photoId: p.photoId,
+        name: p.name,
+        fromServer: p.fromServer || false
+      })),
       comments: state.form.comments || '',
-      visitedAt: new Date().toISOString()
+      visitedAt: new Date().toISOString(),
+      sourceVisitId: state.form.sourceVisitId || null
     };
     await window.db.addVisit({
       clientId: clientId,
@@ -2789,7 +2833,160 @@ async function resetVisitAttempts(clientId) {
   await refreshQueueStats();
   render();
 }
+// ================= ЗАГРУЗКА ПРОШЛЫХ ОСМОТРОВ =================
 
+async function loadExistingVisitsList(kv) {
+  try {
+    const res = await apiGet('getVisitsByKv', { kvNumber: kv }, 10000);
+    const data = (res && res.data) ? res.data : res;
+    if (data && data.found && data.visits && data.visits.length) {
+      state.existingVisits = data.visits;
+    } else {
+      state.existingVisits = [];
+    }
+    renderKvResultBlock();
+  } catch (e) {
+    console.warn('[loadExistingVisitsList]', e.message);
+    state.existingVisits = [];
+    renderKvResultBlock();
+  }
+}
+
+async function selectExistingVisit(clientId) {
+  if (state.loadingExisting) return;
+
+  // Если уже выбран — снимаем выбор
+  if (state.selectedVisitId === clientId) {
+    state.selectedVisitId = null;
+    state.existingVisit = null;
+    renderKvResultBlock();
+    return;
+  }
+
+  state.selectedVisitId = clientId;
+  state.loadingExisting = true;
+  renderKvResultBlock();
+
+  try {
+    // 1. Загружаем данные осмотра
+    const res = await apiGet('getVisitById', { clientId: clientId }, 15000);
+    const data = (res && res.data) ? res.data : res;
+
+    if (!data || !data.found) {
+      throw new Error((data && data.error) || 'Осмотр не найден');
+    }
+
+    state.existingVisit = data;
+
+    // 2. Скачиваем все фото в IndexedDB для офлайна
+    await downloadVisitPhotos(data);
+
+    console.log('[selectExistingVisit] Осмотр загружен:', clientId);
+  } catch (err) {
+    console.error('[selectExistingVisit]', err);
+    alert('Ошибка загрузки: ' + err.message);
+    state.selectedVisitId = null;
+    state.existingVisit = null;
+  } finally {
+    state.loadingExisting = false;
+    renderKvResultBlock();
+  }
+}
+
+async function downloadVisitPhotos(visitData) {
+  if (!visitData || !visitData.payload) return;
+
+  const payload = visitData.payload;
+  const kv = payload.kvNumber || '';
+  const tasks = [];
+
+  // Собираем все URL'ы с привязкой к stateKey и variantKey
+  Object.keys(payload.results || {}).forEach(stateKey => {
+    const rs = payload.results[stateKey];
+    (rs.commonPhotos || []).forEach((p, i) => {
+      if (p.url && !p.photoId) {
+        tasks.push({ url: p.url, stateKey, variantKey: '', idx: i, isCommon: true });
+      }
+    });
+    Object.keys(rs.photosByVariant || {}).forEach(variant => {
+      (rs.photosByVariant[variant] || []).forEach((p, i) => {
+        if (p.url && !p.photoId) {
+          tasks.push({ url: p.url, stateKey, variantKey: variant, idx: i, isCommon: false });
+        }
+      });
+    });
+  });
+
+  (payload.extraPhotos || []).forEach((p, i) => {
+    if (p.url && !p.photoId) {
+      tasks.push({ url: p.url, stateKey: '__extra__', variantKey: '', idx: i, isCommon: false, isExtra: true });
+    }
+  });
+
+  if (!tasks.length) return;
+  console.log('[downloadVisitPhotos] Скачиваем фото:', tasks.length);
+
+  // Скачиваем по одному с паузой 200 мс
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    try {
+      const blob = await fetchPhotoAsBlob(task.url);
+      if (!blob) continue;
+
+      const photoId = window.db.uuid();
+      const fileName = buildFileName(
+        task.stateKey.split('.')[0] || 'server',
+        task.stateKey.split('.')[1] || 'photo',
+        task.idx + 1
+      );
+      const localUrl = URL.createObjectURL(blob);
+
+      await window.db.addPhoto({
+        photoId: photoId,
+        visitClientId: visitData.clientId,
+        stateKey: task.stateKey,
+        variantKey: task.variantKey,
+        fileName: fileName,
+        kvNumber: kv,
+        blob: blob,
+        status: 'pending',
+        attempts: 0,
+        lastError: '',
+        remote: { url: task.url },
+        localUrl: localUrl,
+        fromServer: true
+      });
+
+      // Привязываем к результату
+      const rs = task.isExtra ? null : payload.results[task.stateKey];
+      if (task.isExtra) {
+        payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true };
+      } else if (rs) {
+        const arr = task.isCommon ? (rs.commonPhotos || []) : (rs.photosByVariant[task.variantKey] || []);
+        arr[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true };
+        if (task.isCommon) rs.commonPhotos = arr;
+        else rs.photosByVariant[task.variantKey] = arr;
+      }
+
+      console.log(`[downloadVisitPhotos] ${i + 1}/${tasks.length}`);
+    } catch (err) {
+      console.warn('[downloadVisitPhotos] Ошибка фото:', task.url, err.message);
+    }
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  console.log('[downloadVisitPhotos] Готово');
+}
+
+async function fetchPhotoAsBlob(url) {
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    return await resp.blob();
+  } catch (e) {
+    return null;
+  }
+}
 // ================= ЭКСПОРТ ДЛЯ ONCLICK =================
 window.forcePingCheck = forcePingCheck;
 window.startBannerLongPress = startBannerLongPress;
@@ -2802,6 +2999,7 @@ window.closePhotoLightbox = closePhotoLightbox;
 window.uploadQueueToDrive = uploadQueueToDrive;
 window.sendVisitNow = sendVisitNow;
 window.resetVisitAttempts = resetVisitAttempts;
+window.selectExistingVisit = selectExistingVisit;
 // ================= SVG-ИКОНКИ (стиль Evernote) =================
 // Тонкие линейные иконки. Используют currentColor — цвет наследуется от родителя.
 // Параметр size — размер в px (по умолчанию 24).
