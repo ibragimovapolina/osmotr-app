@@ -1,7 +1,7 @@
 // ================= IndexedDB v3 =================
 
 const DB_NAME = 'osmotr_db';
-const DB_VERSION = 3; // Подняли с 2 до 3
+const DB_VERSION = 3;
 const STORE_DRAFTS         = 'drafts';
 const STORE_REFERENCE      = 'reference';
 const STORE_REMARKS        = 'remarks';
@@ -9,7 +9,7 @@ const STORE_MARKS          = 'marks';
 const STORE_META           = 'meta';
 const STORE_VISITS         = 'visits';
 const STORE_PHOTOS         = 'photos';
-const STORE_OFFLINE_VISITS = 'offline_visits'; // Новое хранилище
+const STORE_OFFLINE_VISITS = 'offline_visits';
 
 const DRAFT_KEY = 'current_draft';
 
@@ -49,7 +49,6 @@ function openDB() {
         s.createIndex('visitClientId', 'visitClientId', { unique: false });
         s.createIndex('status', 'status', { unique: false });
       }
-      // Новое хранилище для скачанных осмотров
       if (!db.objectStoreNames.contains(STORE_OFFLINE_VISITS)) {
         const s = db.createObjectStore(STORE_OFFLINE_VISITS, { keyPath: 'clientId' });
         s.createIndex('kvNumber', 'kvNumber', { unique: false });
@@ -239,13 +238,11 @@ async function getSyncedVisits() {
   return all.filter(v => v.status === 'synced');
 }
 
-// Скрытые записи (hidden: true) — не показываем в списке
 async function getVisibleVisits() {
   const all = await getAllVisits();
   return all.filter(v => !v.hidden);
 }
 
-// Все осмотры по конкретному номеру квартиры (для предупреждения)
 async function findVisitsByKv(kvNumber) {
   const all = await getAllVisits();
   const kv = String(kvNumber || '').trim().toLowerCase();
@@ -274,7 +271,6 @@ async function deleteVisit(clientId) {
   } catch (e) { return false; }
 }
 
-// Автосброс «зависших» осмотров в статусе syncing, старше N минут
 async function resetStuckSyncing(maxAgeMinutes) {
   const maxAge = (maxAgeMinutes || 3) * 60 * 1000;
   const now = Date.now();
@@ -326,6 +322,22 @@ async function getAllOfflineVisits() {
     const r = tx.objectStore(STORE_OFFLINE_VISITS).getAll();
     return (await req(r)) || [];
   } catch (e) { return []; }
+}
+
+// Функция для получения статистики по скачанным квартирам
+async function getAllOfflineVisitsInfo() {
+  try {
+    const visits = await getAllOfflineVisits();
+    const map = {};
+    visits.forEach(v => {
+      const kv = String(v.kvNumber).trim();
+      const date = v.visitedAt ? new Date(v.visitedAt).getTime() : 0;
+      if (!map[kv] || date > map[kv].date) {
+        map[kv] = { date: date, visitedAt: v.visitedAt };
+      }
+    });
+    return map;
+  } catch (e) { return {}; }
 }
 
 // ================= PHOTOS =================
@@ -489,7 +501,7 @@ window.db = {
   addVisit, getVisit, updateVisit, getAllVisits, getPendingVisits, getSyncedVisits,
   getVisibleVisits, findVisitsByKv, hideVisit, unhideVisit, deleteVisit,
   resetStuckSyncing,
-  saveOfflineVisit, getOfflineVisitsByKv, getAllOfflineVisits, // Экспорт новых функций
+  saveOfflineVisit, getOfflineVisitsByKv, getAllOfflineVisits, getAllOfflineVisitsInfo,
   addPhoto, getPhoto, updatePhoto, getPhotosForVisit, getAllPhotos, deletePhoto,
   getPhotoCountsForVisit,
   getQueueStats,
