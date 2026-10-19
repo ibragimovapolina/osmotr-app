@@ -34,11 +34,11 @@ const state = {
   visitPreview: null,
   photoLightbox: null,
   queueBackupBusy: false,
-  queueBackupMsg: null
+  queueBackupMsg: null,
   existingVisits: [],     // массив прошлых осмотров
   selectedVisitId: null,  // выбранный для загрузки
   loadingExisting: false, // флаг загрузки
-  existingVisit: null,    // загруженный осмотр
+  existingVisit: null    // загруженный осмотр
   };
 
 // Флаг защиты от двойного клика по «удалить фото»
