@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.9.2';
+const APP_VERSION = '1.9.3';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1918,6 +1918,7 @@ async function loadExistingVisitsList(kv) {
 async function selectExistingVisit(clientId) {
   if (state.loadingExisting) return;
 
+  // Если уже выбран — снимаем выбор
   if (state.selectedVisitId === clientId) {
     state.selectedVisitId = null;
     state.existingVisit = null;
@@ -1930,40 +1931,23 @@ async function selectExistingVisit(clientId) {
   renderKvResultBlock();
 
   try {
-    let visitData = null;
-
-    // 1. Сначала всегда пытаемся взять из офлайн-хранилища (там уже есть фото!)
+    // 1. СНАЧАЛА ищем в памяти телефона (мгновенно)
     const offline = await window.db.getOfflineVisitsByKv(state.form.kvNumber);
     const found = offline.find(v => v.clientId === clientId);
     
     if (found) {
-      console.log('[selectExistingVisit] Нашли осмотр в памяти телефона');
-      visitData = { found: true, clientId, payload: found.payload };
-    } 
-    // 2. Если в памяти нет, и есть интернет — идем на сервер
-    else if (navigator.onLine) {
-      console.log('[selectExistingVisit] В памяти нет, грузим с сервера...');
+      console.log('[selectExistingVisit] Загружено из памяти:', clientId);
+      state.existingVisit = { found: true, clientId, payload: found.payload };
+    } else if (navigator.onLine) {
+      // 2. Если в памяти нет, грузим с сервера
       const res = await apiGet('getVisitById', { clientId: clientId }, 15000);
       const data = (res && res.data) ? res.data : res;
-
-      if (!data || !data.found) throw new Error('Осмотр не найден на сервере');
-      
-      visitData = data;
-      // Скачиваем фото и сохраняем
-      await downloadVisitPhotos(visitData);
-      await window.db.saveOfflineVisit({
-        clientId: visitData.clientId,
-        kvNumber: state.form.kvNumber,
-        visitedAt: visitData.visitedAt,
-        email: visitData.email,
-        payload: visitData.payload
-      });
+      if (!data || !data.found) throw new Error('Осмотр не найден');
+      state.existingVisit = data;
+      await downloadVisitPhotos(data);
     } else {
-      throw new Error('Нет интернета, и нет скачанных данных для этой квартиры.');
+      throw new Error('Нет интернета и нет скачанных данных.');
     }
-
-    state.existingVisit = visitData;
-    
   } catch (err) {
     console.error('[selectExistingVisit]', err);
     alert('Ошибка загрузки: ' + err.message);
@@ -1982,7 +1966,6 @@ async function downloadVisitPhotos(visitData, onProgress) {
   const kv = payload.kvNumber || '';
   const tasks = [];
 
-  // Собираем все URL'ы. Скачиваем всё, что имеет ссылку, но ещё не имеет photoId.
   Object.keys(payload.results || {}).forEach(stateKey => {
     const rs = payload.results[stateKey];
     (rs.commonPhotos || []).forEach((p, i) => {
@@ -1999,30 +1982,19 @@ async function downloadVisitPhotos(visitData, onProgress) {
     if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey: '__extra__', variantKey: '', idx: i, isCommon: false, isExtra: true });
   });
 
-  if (!tasks.length) {
-    console.log('[downloadVisitPhotos] Нет фото для скачивания');
-    return;
-  }
-  
-  console.log('[downloadVisitPhotos] Найдено фото для скачивания:', tasks.length);
+  if (!tasks.length) return;
   let downloaded = 0;
 
   for (let i = 0; i < tasks.length; i++) {
     const task = tasks[i];
     try {
-      // Используем fetchPhotoAsBlob, который скачивает через GAS (base64)
       const blob = await fetchPhotoAsBlob(task.url);
-      if (!blob) {
-        console.warn('[downloadVisitPhotos] Не удалось получить blob для:', task.url);
-        continue;
-      }
+      if (!blob) continue;
 
       const photoId = window.db.uuid();
-      const fileName = buildFileName(
-        task.stateKey.split('.')[0] || 'server',
-        task.stateKey.split('.')[1] || 'photo',
-        task.idx + 1
-      );
+      const fileName = buildFileName(task.stateKey.split('.')[0] || 'server', task.stateKey.split('.')[1] || 'photo', task.idx + 1);
+      
+      // ВОТ ГЛАВНОЕ: создаем localUrl для отображения!
       const localUrl = URL.createObjectURL(blob);
       const remoteData = { url: task.url };
 
@@ -2038,10 +2010,11 @@ async function downloadVisitPhotos(visitData, onProgress) {
         attempts: 0,
         lastError: '',
         remote: remoteData,
-        localUrl: localUrl,
+        localUrl: localUrl, // Сохраняем ссылку
         fromServer: true
       });
 
+      // Привязываем localUrl к объекту в payload, чтобы превью работало
       const rs = task.isExtra ? null : payload.results[task.stateKey];
       if (task.isExtra) {
         payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
@@ -2054,7 +2027,6 @@ async function downloadVisitPhotos(visitData, onProgress) {
       
       downloaded++;
       if (onProgress) onProgress(downloaded);
-      
     } catch (err) {
       console.warn('[downloadVisitPhotos] Ошибка фото:', task.url, err.message);
     }
@@ -2125,18 +2097,56 @@ function onOfflineSearchInput(value) { state.offlineSearch = value; render(); }
 
 async function startSelectedOfflineDownload() {
   const selected = Object.keys(state.offlineKvSelected);
-  if (!selected.length) { alert('Выберите хотя бы одну квартиру.'); return; }
+  if (!selected.length) {
+    alert('Выберите хотя бы одну квартиру.');
+    return;
+  }
+
   state.offlineDownloading = true;
   state.offlineShowProgressModal = true;
-  state.offlineProgress = { current: 0, total: selected.length, kv: '', photos: 0 };
+  state.offlineProgress = { current: 0, total: selected.length, kv: '', photos: 0, totalPhotos: 0 };
+  
   renderOfflineProgressModal();
+
   let successCount = 0;
   let totalPhotosCount = 0;
+
+  // Сначала узнаем, сколько всего фото (для прогресс-бара)
+  try {
+    for (const kv of selected) {
+      const listRes = await apiGet('getVisitsByKv', { kvNumber: kv });
+      const listData = (listRes && listRes.data) ? listRes.data : listRes;
+      if (listData.found && listData.visits) {
+        for (const v of listData.visits) {
+          const visitRes = await apiGet('getVisitById', { clientId: v.clientId });
+          const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
+          if (visitData && visitData.found) {
+            // Считаем количество фото
+            Object.keys(visitData.payload.results || {}).forEach(sk => {
+              totalPhotosCount += (visitData.payload.results[sk].commonPhotos || []).length;
+              Object.keys(visitData.payload.results[sk].photosByVariant || {}).forEach(v => {
+                totalPhotosCount += (visitData.payload.results[sk].photosByVariant[v] || []).length;
+              });
+            });
+            totalPhotosCount += (visitData.payload.extraPhotos || []).length;
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[offline] Ошибка подсчета фото:', e.message);
+  }
+  
+  state.offlineProgress.totalPhotos = totalPhotosCount;
+  updateOfflineProgressModal();
+
+  // Теперь скачиваем
   for (let i = 0; i < selected.length; i++) {
     const kv = selected[i];
     state.offlineProgress.current = i + 1;
     state.offlineProgress.kv = kv;
     updateOfflineProgressModal();
+
     try {
       const listRes = await apiGet('getVisitsByKv', { kvNumber: kv });
       const listData = (listRes && listRes.data) ? listRes.data : listRes;
@@ -2145,24 +2155,32 @@ async function startSelectedOfflineDownload() {
           const visitRes = await apiGet('getVisitById', { clientId: v.clientId });
           const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
           if (visitData && visitData.found) {
-            const photosBefore = totalPhotosCount;
             await downloadVisitPhotos(visitData, (count) => {
-              totalPhotosCount = photosBefore + count;
-              state.offlineProgress.photos = totalPhotosCount;
+              state.offlineProgress.photos += count;
               updateOfflineProgressModal();
             });
-            await window.db.saveOfflineVisit({ clientId: v.clientId, kvNumber: kv, visitedAt: v.visitedAt, email: v.email, payload: visitData.payload });
+            await window.db.saveOfflineVisit({
+              clientId: v.clientId,
+              kvNumber: kv,
+              visitedAt: v.visitedAt,
+              email: v.email,
+              payload: visitData.payload
+            });
           }
         }
       }
       successCount++;
-    } catch (err) { console.warn('[offline download] kv', kv, err.message); }
-    await new Promise(r => setTimeout(r, 500));
+    } catch (err) {
+      console.warn('[offline download] kv', kv, err.message);
+    }
+    await new Promise(r => setTimeout(r, 300));
   }
+
   state.offlineDownloading = false;
   state.offlineShowProgressModal = false;
   closeOfflineProgressModal();
-  alert(`✅ Скачано квартир: ${successCount}. Всего фото: ${totalPhotosCount}.`);
+  
+  alert(`✅ Скачано квартир: ${successCount}. Скачано фото: ${state.offlineProgress.photos} из ${totalPhotosCount}.`);
   closeOfflineDownloadScreen();
 }
 
@@ -2222,12 +2240,26 @@ function updateOfflineProgressModal() {
   const fill = document.getElementById('offlineProgressFill');
   const text = document.getElementById('offlineProgressText');
   const photosText = document.getElementById('offlineProgressPhotos');
+
   if (!fill || !text) return;
+
   const p = state.offlineProgress;
-  const percent = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
-  fill.style.width = percent + '%';
+  
+  // Считаем процент по квартирам
+  const kvPercent = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
+  
+  // Считаем процент по фото, если знаем общее
+  let photoInfo = '';
+  if (p.totalPhotos > 0) {
+    const photoPercent = Math.round((p.photos / p.totalPhotos) * 100);
+    photoInfo = `Фото: ${p.photos} из ${p.totalPhotos} (${photoPercent}%)`;
+    fill.style.width = photoPercent + '%';
+  } else {
+    fill.style.width = kvPercent + '%';
+  }
+  
   text.textContent = `Квартира ${p.current} из ${p.total} (№ ${p.kv})`;
-  if (photosText && p.photos > 0) photosText.textContent = `Скачано фотографий: ${p.photos}`;
+  if (photosText) photosText.textContent = photoInfo;
 }
 
 function closeOfflineProgressModal() { const el = document.getElementById('offlineProgressBackdrop'); if (el) el.remove(); }
