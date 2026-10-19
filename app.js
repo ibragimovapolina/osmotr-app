@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.0.3';
+const APP_VERSION = '2.0.4';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -2237,7 +2237,6 @@ function renderOfflineDownloadScreen(app) {
   const visibleSelected = filtered.filter(kv => state.offlineKvSelected[kv]).length;
   const allVisibleSelected = filtered.length > 0 && visibleSelected === filtered.length;
   
-  // Считаем общую статистику
   const totalDownloaded = Object.keys(state.offlineDownloadedMap).length;
 
   app.innerHTML = `
