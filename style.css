@@ -1410,3 +1410,96 @@ select.field-input {
 .photo-section.common-view .photo-section-title {
   margin-bottom: 10px;
 }
+/* ========================================
+   СПИСОК ПРОШЛЫХ ОСМОТРОВ
+   ======================================== */
+
+.existing-visits-block {
+  background: #F9F9FA;
+  border-radius: 14px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.existing-visits-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.existing-visits-hint {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+
+.existing-visit-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 12px 14px;
+  background: #fff;
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: left;
+  font-family: inherit;
+}
+
+.existing-visit-item:active {
+  transform: scale(0.99);
+}
+
+.existing-visit-item.selected {
+  border-color: var(--green);
+  background: var(--green-light);
+}
+
+.existing-visit-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.existing-visit-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.existing-visit-date {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.existing-visit-email {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.existing-visit-arrow,
+.existing-visit-check {
+  font-size: 20px;
+  color: var(--text-tertiary);
+  margin-left: 10px;
+  flex-shrink: 0;
+}
+
+.existing-visit-check {
+  color: var(--green-dark);
+  font-weight: 700;
+}
+
+.existing-visits-note {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 10px;
+  padding: 8px 10px;
+  background: #FFF8E1;
+  border-radius: 8px;
+  line-height: 1.4;
+}
