@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.3.2';
+const APP_VERSION = '1.7.0';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -15,7 +15,8 @@ const state = {
     results: {},
     uploading: {},
     comments: '',
-    extraPhotos: []
+    extraPhotos: [],
+    sourceVisitId: null // ID прошлого осмотра, если дополняем
   },
   submitResult: null,
   pendingDraft: null,
@@ -35,17 +36,17 @@ const state = {
   photoLightbox: null,
   queueBackupBusy: false,
   queueBackupMsg: null,
-  existingVisits: [],     // массив прошлых осмотров
-  selectedVisitId: null,  // выбранный для загрузки
-  loadingExisting: false, // флаг загрузки
-  existingVisit: null,    // загруженный осмотр
-  offlineDownloadScreen: false, // Открыт ли экран выбора
-  offlineKvList: [],            // Список всех доступных квартир
-  offlineKvSelected: {},        // Объект выбранных { "186": true, "230": false }
-  offlineSearch: '',            // Поиск по номеру
+  existingVisits: [],     
+  selectedVisitId: null,  
+  loadingExisting: false, 
+  existingVisit: null,    
+  offlineDownloadScreen: false, 
+  offlineKvList: [],            
+  offlineKvSelected: {},        
+  offlineSearch: '',            
   offlineDownloading: false,
   offlineProgress: { current: 0, total: 0, kv: '' }
-    };
+};
 
 // Флаг защиты от двойного клика по «удалить фото»
 let _deletingPhoto = false;
@@ -68,7 +69,6 @@ async function init() {
 }
 
 // ================= ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ =================
-
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
 
@@ -103,11 +103,6 @@ function registerServiceWorker() {
     console.warn('[SW] ошибка регистрации:', err);
   });
 }
-
-// Комбинированный механизм обновления:
-//  - Первый reload — активирует новый SW
-//  - Второй reload (через sessionStorage) — подтягивает свежие файлы через SW
-//  - Защита от гонки: пауза 300 мс после controllerchange
 
 function applySwUpdate() {
   if (!('serviceWorker' in navigator)) {
@@ -177,7 +172,6 @@ async function continueStartup() {
     window.db.resetStuckSyncing(3).catch(() => {});
   }
 
-  // Автосохранение очереди — с задержкой, чтобы не мешать загрузке
   setTimeout(() => { maybeAutoBackupQueue().catch(() => {}); }, 5000);
 
   const draft = await checkDraftOnStart();
@@ -517,6 +511,7 @@ function renderHome(app) {
     </button>
   `;
 }
+
 function pluralVisits(n) {
   const mod10 = n % 10;
   const mod100 = n % 100;
@@ -525,30 +520,6 @@ function pluralVisits(n) {
   return 'осмотров';
 }
 
-async function syncAllNow() {
-  if (!window.sync) return;
-  if (window.sync.resetAllAttempts) await window.sync.resetAllAttempts();
-  await window.sync.syncNow();
-  await refreshQueueStats();
-  render();
-}
-
-async function showQueue() {
-  if (!window.db || !window.db.getAllVisits) return;
-  state.queueList = await window.db.getAllVisits();
-  state.screen = 'queue';
-  render();
-  window.scrollTo(0, 0);
-}
-
-// ================= НАСТРОЙКИ =================
-async function showSettings() {
-  state.settingsMessage = null;
-  state.screen = 'settings';
-  await refreshQueueStats();
-  render();
-  window.scrollTo(0, 0);
-}
 function renderStatusLine() {
   const online = navigator.onLine;
   const apiMeta = state.apiReachable || null;
@@ -575,6 +546,32 @@ function renderStatusLine() {
     </div>
   `;
 }
+
+async function syncAllNow() {
+  if (!window.sync) return;
+  if (window.sync.resetAllAttempts) await window.sync.resetAllAttempts();
+  await window.sync.syncNow();
+  await refreshQueueStats();
+  render();
+}
+
+async function showQueue() {
+  if (!window.db || !window.db.getAllVisits) return;
+  state.queueList = await window.db.getAllVisits();
+  state.screen = 'queue';
+  render();
+  window.scrollTo(0, 0);
+}
+
+// ================= НАСТРОЙКИ =================
+async function showSettings() {
+  state.settingsMessage = null;
+  state.screen = 'settings';
+  await refreshQueueStats();
+  render();
+  window.scrollTo(0, 0);
+}
+
 async function renderSettings(app) {
   let refCount = 0, photoQueue = 0;
   try {
@@ -1271,7 +1268,7 @@ function startNewVisit() {
   state.form = {
     kvNumber: '', apartment: null, editedFields: {},
     divisions: [], currentDivisionIndex: 0, results: {}, uploading: {},
-    comments: '', extraPhotos: []
+    comments: '', extraPhotos: [], sourceVisitId: null
   };
   state.submitResult = null;
   state.pendingDraft = null;
@@ -1324,7 +1321,6 @@ function onKvInput(value) {
       if (data && data.found) {
         state.form.apartment = data.data;
         
-        // Проверяем локальные осмотры (в очереди на телефоне)
         let localVisits = [];
         try { localVisits = await window.db.findVisitsByKv(kv); } catch (e) {}
         
@@ -1341,10 +1337,9 @@ function onKvInput(value) {
         renderKvResultBlock();
         if (btn) btn.disabled = false;
 
-        // Если есть интернет — грузим данные с сервера
         if (navigator.onLine) {
           checkServerVisits(kv).catch(() => {});
-          loadExistingVisitsList(kv).catch(() => {}); // ← НОВАЯ СТРОКА
+          loadExistingVisitsList(kv).catch(() => {});
         }
       } else {
         state.form.apartment = null;
@@ -1395,7 +1390,6 @@ function renderKvResultBlock() {
     </div>
   `;
 
-  // Если есть прошлые осмотры — показываем список
   if (state.existingVisits && state.existingVisits.length > 0) {
     html += `<div class="existing-visits-block">
       <div class="existing-visits-title">📋 Эта квартира уже осматривалась</div>
@@ -1430,6 +1424,7 @@ function renderKvResultBlock() {
 
   result.innerHTML = html;
 }
+
 function removeKvWarningBlock() {
   const el = document.getElementById('kvWarningBlock');
   if (el) el.remove();
@@ -1460,7 +1455,6 @@ async function checkApartmentSmart(kv) {
 function onKvNext() {
   if (!state.form.apartment) return;
 
-  // Если выбран прошлый осмотр — восстанавливаем данные
   if (state.existingVisit && state.existingVisit.payload) {
     const prev = state.existingVisit.payload;
 
@@ -1615,7 +1609,6 @@ function renderObjectCard(divKey, obj) {
   if (!objState.commonPhotos) objState.commonPhotos = [];
   if (!objState.photosByVariant) objState.photosByVariant = {};
 
-  // === Блок «Общий вид» — сверху ===
   const commonPhotosHtml = (objState.commonPhotos || []).map((p, i) => `
     <div class="photo-item">
       <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
@@ -1646,7 +1639,6 @@ function renderObjectCard(divKey, obj) {
     </div>
   `;
 
-  // === Чипы с привязанными фото ===
   const variantsHtml = (obj.variants || []).map((v) => {
     const isSelected = objState.selected.includes(v.variant);
     const vol = objState.volumes[v.variant];
@@ -1719,61 +1711,6 @@ function renderObjectCard(divKey, obj) {
 
       ${customHtml}
       ${error}
-    </div>
-  `;
-}
-function buildPhotoSections(stateKey, objState) {
-  const sections = [];
-
-  sections.push(renderPhotoSection(
-    stateKey,
-    '__common__',
-    'Общий вид',
-    objState.commonPhotos || [],
-    state.form.uploading[stateKey + '__common__']
-  ));
-
-  (objState.selected || []).forEach(variant => {
-    const photos = (objState.photosByVariant && objState.photosByVariant[variant]) || [];
-    sections.push(renderPhotoSection(
-      stateKey,
-      variant,
-      variant,
-      photos,
-      state.form.uploading[stateKey + '__' + variant]
-    ));
-  });
-
-  return sections.join('');
-}
-
-function renderPhotoSection(stateKey, variantKey, title, photos, uploading) {
-  const photoItemsHtml = photos.map((p, i) => `
-    <div class="photo-item">
-      <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
-      <button type="button" class="photo-remove" onclick="removePhotoFromSection('${escapeAttr(stateKey)}', '${escapeAttr(variantKey)}', ${i})">${iconX(14)}</button>
-    </div>
-  `).join('');
-
-  let uploadingHtml = '';
-  if (uploading) {
-    uploadingHtml = `
-      <div class="photo-item photo-uploading">
-        <div class="photo-spinner"></div>
-        <div class="photo-uploading-text">${uploading.current} из ${uploading.total}</div>
-      </div>
-    `;
-  }
-
-  return `
-    <div class="photo-section" data-section="${escapeAttr(stateKey)}::${escapeAttr(variantKey)}">
-      <div class="photo-section-title">${escapeHtml(title)}</div>
-      <div class="photo-list">${photoItemsHtml}${uploadingHtml}</div>
-      <label class="photo-add-label">
-        <input type="file" accept="image/*" multiple style="display:none"
-               onchange="onPhotoSelected2(event, '${escapeAttr(stateKey)}', '${escapeAttr(variantKey)}')">
-        <span class="photo-add-btn">${iconCamera(20)}<span>Добавить фото</span></span>
-      </label>
     </div>
   `;
 }
@@ -2060,6 +1997,7 @@ function renderExtraInfo(app, div, progressText, isLast) {
     </div>
   `;
 }
+
 function onCommentsInput(value) {
   state.form.comments = value;
   debouncedAutoSave();
@@ -2202,15 +2140,24 @@ async function submitVisit() {
         custom: rs.custom || '',
         noIssues: rs.noIssues || false,
         volumes: rs.volumes || {},
-        commonPhotos: (rs.commonPhotos || []).map(p => ({ photoId: p.photoId, name: p.name })),
+        commonPhotos: (rs.commonPhotos || []).map(p => ({
+          photoId: p.photoId,
+          name: p.name,
+          url: p.url,
+          remote: p.remote || null
+        })),
         photosByVariant: {}
       };
       Object.keys(rs.photosByVariant || {}).forEach(variant => {
         cleanResults[key].photosByVariant[variant] = (rs.photosByVariant[variant] || []).map(p => ({
-          photoId: p.photoId, name: p.name
+          photoId: p.photoId,
+          name: p.name,
+          url: p.url,
+          remote: p.remote || null
         }));
       });
     });
+
     const payload = {
       email: state.user.name || 'осмотрщик',
       kvNumber: state.form.kvNumber,
@@ -2218,12 +2165,16 @@ async function submitVisit() {
       extraPhotos: (state.form.extraPhotos || []).map(p => ({
         photoId: p.photoId,
         name: p.name,
+        url: p.url,
+        remote: p.remote || null,
         fromServer: p.fromServer || false
       })),
       comments: state.form.comments || '',
       visitedAt: new Date().toISOString(),
-      sourceVisitId: state.form.sourceVisitId || null
+      sourceVisitId: state.form.sourceVisitId || null,
+      clientId: clientId
     };
+
     await window.db.addVisit({
       clientId: clientId,
       createdAt: new Date().toISOString(),
@@ -2282,7 +2233,8 @@ function autoSave() {
       currentDivisionIndex: state.form.currentDivisionIndex,
       results: state.form.results,
       comments: state.form.comments,
-      extraPhotos: state.form.extraPhotos
+      extraPhotos: state.form.extraPhotos,
+      sourceVisitId: state.form.sourceVisitId
     },
     screen: state.screen,
     savedAt: new Date().toISOString(),
@@ -2319,7 +2271,8 @@ function restoreDraft(draft) {
     results: draft.form.results || {},
     uploading: {},
     comments: draft.form.comments || '',
-    extraPhotos: draft.form.extraPhotos || []
+    extraPhotos: draft.form.extraPhotos || [],
+    sourceVisitId: draft.form.sourceVisitId || null
   };
   state.draftId = draft.draftId || window.db.uuid();
   state.screen = draft.screen || 'newVisitKv';
@@ -2958,6 +2911,7 @@ async function downloadVisitPhotos(visitData) {
         task.idx + 1
       );
       const localUrl = URL.createObjectURL(blob);
+      const remoteData = { url: task.url }; // Сохраняем оригинальную ссылку
 
       await window.db.addPhoto({
         photoId: photoId,
@@ -2967,21 +2921,21 @@ async function downloadVisitPhotos(visitData) {
         fileName: fileName,
         kvNumber: kv,
         blob: blob,
-        status: 'pending',
+        status: 'pending', // Скачанное фото, привязанное к прошлому осмотру
         attempts: 0,
         lastError: '',
-        remote: { url: task.url },
+        remote: remoteData,
         localUrl: localUrl,
         fromServer: true
       });
 
-      // Привязываем к результату
+      // Привязываем к результату и сохраняем remote
       const rs = task.isExtra ? null : payload.results[task.stateKey];
       if (task.isExtra) {
-        payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true };
+        payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
       } else if (rs) {
         const arr = task.isCommon ? (rs.commonPhotos || []) : (rs.photosByVariant[task.variantKey] || []);
-        arr[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true };
+        arr[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
         if (task.isCommon) rs.commonPhotos = arr;
         else rs.photosByVariant[task.variantKey] = arr;
       }
@@ -3029,176 +2983,8 @@ async function fetchPhotoAsBlob(url) {
     return null;
   }
 }
-// ================= ЭКСПОРТ ДЛЯ ONCLICK =================
-window.forcePingCheck = forcePingCheck;
-window.startBannerLongPress = startBannerLongPress;
-window.cancelBannerLongPress = cancelBannerLongPress;
-window.showPingDiagnostics = showPingDiagnostics;
-window.showVisitPreview = showVisitPreview;
-window.closeVisitPreview = closeVisitPreview;
-window.openPhotoLightbox = openPhotoLightbox;
-window.closePhotoLightbox = closePhotoLightbox;
-window.uploadQueueToDrive = uploadQueueToDrive;
-window.sendVisitNow = sendVisitNow;
-window.resetVisitAttempts = resetVisitAttempts;
-window.selectExistingVisit = selectExistingVisit;
-// ================= SVG-ИКОНКИ (стиль Evernote) =================
-// Тонкие линейные иконки. Используют currentColor — цвет наследуется от родителя.
-// Параметр size — размер в px (по умолчанию 24).
 
-function iconHome(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 10.5L12 3l9 7.5"/>
-    <path d="M5 9.5V21h14V9.5"/>
-    <path d="M9 21v-6h6v6"/>
-  </svg>`;
-}
-
-function iconList(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="5" y="3" width="14" height="18" rx="2"/>
-    <path d="M9 8h6"/>
-    <path d="M9 12h6"/>
-    <path d="M9 16h4"/>
-  </svg>`;
-}
-
-function iconPencil(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 20h9"/>
-    <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/>
-  </svg>`;
-}
-
-function iconArrowUpCircle(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="12" cy="12" r="9"/>
-    <path d="M12 16V8"/>
-    <path d="M8 12l4-4 4 4"/>
-  </svg>`;
-}
-
-function iconCheckCircle(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="12" cy="12" r="9"/>
-    <path d="M8 12.5l2.5 2.5L16 9.5"/>
-  </svg>`;
-}
-
-function iconGear(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <circle cx="12" cy="12" r="3"/>
-    <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
-  </svg>`;
-}
-
-function iconArrowLeft(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M19 12H5"/>
-    <path d="M12 19l-7-7 7-7"/>
-  </svg>`;
-}
-
-function iconChevronRight(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M9 18l6-6-6-6"/>
-  </svg>`;
-}
-
-function iconEye(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-    <circle cx="12" cy="12" r="3"/>
-  </svg>`;
-}
-
-function iconSend(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M22 2L11 13"/>
-    <path d="M22 2l-7 20-4-9-9-4 20-7z"/>
-  </svg>`;
-}
-
-function iconRefresh(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M23 4v6h-6"/>
-    <path d="M1 20v-6h6"/>
-    <path d="M3.51 9a9 9 0 0114.85-3.36L23 10"/>
-    <path d="M1 14l4.64 4.36A9 9 0 0020.49 15"/>
-  </svg>`;
-}
-
-function iconX(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M18 6L6 18"/>
-    <path d="M6 6l12 12"/>
-  </svg>`;
-}
-
-function iconTrash(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 6h18"/>
-    <path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
-    <path d="M10 11v6"/>
-    <path d="M14 11v6"/>
-  </svg>`;
-}
-
-function iconPlus(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 5v14"/>
-    <path d="M5 12h14"/>
-  </svg>`;
-}
-function iconRuler(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M3 17l14-14 4 4-14 14H3v-4z"/>
-    <path d="M14 6l1.5 1.5"/>
-    <path d="M11 9l1.5 1.5"/>
-    <path d="M8 12l1.5 1.5"/>
-  </svg>`;
-}
-
-function iconCamera(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
-    <circle cx="12" cy="13" r="4"/>
-  </svg>`;
-}
-
-function iconCheck(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M5 12.5l5 5L20 7"/>
-  </svg>`;
-}
-
-function iconArrowRight(size) {
-  const s = size || 24;
-  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M5 12h14"/>
-    <path d="M12 5l7 7-7 7"/>
-  </svg>`;
-}
 // ================= ОФЛАЙН-СКАЧИВАНИЕ =================
-
 async function openOfflineDownloadScreen() {
   if (!navigator.onLine) {
     alert('Нет интернета. Подключитесь к Wi-Fi.');
@@ -3383,4 +3169,172 @@ function renderOfflineDownloadScreen(app) {
       `}
     </div>
   `;
+}
+
+// ================= ЭКСПОРТ ДЛЯ ONCLICK =================
+window.forcePingCheck = forcePingCheck;
+window.startBannerLongPress = startBannerLongPress;
+window.cancelBannerLongPress = cancelBannerLongPress;
+window.showPingDiagnostics = showPingDiagnostics;
+window.showVisitPreview = showVisitPreview;
+window.closeVisitPreview = closeVisitPreview;
+window.openPhotoLightbox = openPhotoLightbox;
+window.closePhotoLightbox = closePhotoLightbox;
+window.uploadQueueToDrive = uploadQueueToDrive;
+window.sendVisitNow = sendVisitNow;
+window.resetVisitAttempts = resetVisitAttempts;
+window.selectExistingVisit = selectExistingVisit;
+
+// ================= SVG-ИКОНКИ (стиль Evernote) =================
+function iconHome(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 10.5L12 3l9 7.5"/>
+    <path d="M5 9.5V21h14V9.5"/>
+    <path d="M9 21v-6h6v6"/>
+  </svg>`;
+}
+
+function iconList(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="5" y="3" width="14" height="18" rx="2"/>
+    <path d="M9 8h6"/>
+    <path d="M9 12h6"/>
+    <path d="M9 16h4"/>
+  </svg>`;
+}
+
+function iconPencil(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 20h9"/>
+    <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/>
+  </svg>`;
+}
+
+function iconArrowUpCircle(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M12 16V8"/>
+    <path d="M8 12l4-4 4 4"/>
+  </svg>`;
+}
+
+function iconCheckCircle(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M8 12.5l2.5 2.5L16 9.5"/>
+  </svg>`;
+}
+
+function iconGear(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+  </svg>`;
+}
+
+function iconArrowLeft(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M19 12H5"/>
+    <path d="M12 19l-7-7 7-7"/>
+  </svg>`;
+}
+
+function iconChevronRight(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 18l6-6-6-6"/>
+  </svg>`;
+}
+
+function iconEye(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </svg>`;
+}
+
+function iconSend(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 2L11 13"/>
+    <path d="M22 2l-7 20-4-9-9-4 20-7z"/>
+  </svg>`;
+}
+
+function iconRefresh(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M23 4v6h-6"/>
+    <path d="M1 20v-6h6"/>
+    <path d="M3.51 9a9 9 0 0114.85-3.36L23 10"/>
+    <path d="M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+  </svg>`;
+}
+
+function iconX(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 6L6 18"/>
+    <path d="M6 6l12 12"/>
+  </svg>`;
+}
+
+function iconTrash(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 6h18"/>
+    <path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+    <path d="M10 11v6"/>
+    <path d="M14 11v6"/>
+  </svg>`;
+}
+
+function iconPlus(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 5v14"/>
+    <path d="M5 12h14"/>
+  </svg>`;
+}
+
+function iconRuler(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 17l14-14 4 4-14 14H3v-4z"/>
+    <path d="M14 6l1.5 1.5"/>
+    <path d="M11 9l1.5 1.5"/>
+    <path d="M8 12l1.5 1.5"/>
+  </svg>`;
+}
+
+function iconCamera(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+    <circle cx="12" cy="13" r="4"/>
+  </svg>`;
+}
+
+function iconCheck(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 12.5l5 5L20 7"/>
+  </svg>`;
+}
+
+function iconArrowRight(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 12h14"/>
+    <path d="M12 5l7 7-7 7"/>
+  </svg>`;
 }
