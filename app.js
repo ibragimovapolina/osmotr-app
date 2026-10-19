@@ -2142,14 +2142,13 @@ async function startSelectedOfflineDownload() {
 
   state.offlineDownloading = true;
   state.offlineShowProgressModal = true;
-  // СБРАСЫВАЕМ счетчики перед началом!
   state.offlineProgress = { current: 0, total: selected.length, kv: '', photos: 0, totalPhotos: 0 };
   
   renderOfflineProgressModal();
 
   let successCount = 0;
   
-  // Сначала узнаем, сколько всего фото (для прогресс-бара)
+  // Сначала узнаем, сколько всего фото
   try {
     for (const kv of selected) {
       const listRes = await apiGet('getVisitsByKv', { kvNumber: kv });
@@ -2159,7 +2158,6 @@ async function startSelectedOfflineDownload() {
           const visitRes = await apiGet('getVisitById', { clientId: v.clientId });
           const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
           if (visitData && visitData.found) {
-            // Считаем количество фото
             Object.keys(visitData.payload.results || {}).forEach(sk => {
               state.offlineProgress.totalPhotos += (visitData.payload.results[sk].commonPhotos || []).length;
               Object.keys(visitData.payload.results[sk].photosByVariant || {}).forEach(v => {
@@ -2171,13 +2169,11 @@ async function startSelectedOfflineDownload() {
         }
       }
     }
-  } catch (e) {
-    console.warn('[offline] Ошибка подсчета фото:', e.message);
-  }
+  } catch (e) { console.warn('[offline] Ошибка подсчета фото:', e.message); }
   
   updateOfflineProgressModal();
 
-  // Теперь скачиваем
+  // Скачиваем и сохраняем
   for (let i = 0; i < selected.length; i++) {
     const kv = selected[i];
     state.offlineProgress.current = i + 1;
@@ -2192,11 +2188,21 @@ async function startSelectedOfflineDownload() {
           const visitRes = await apiGet('getVisitById', { clientId: v.clientId });
           const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
           if (visitData && visitData.found) {
+            
+            // 1. Скачиваем фото (счетчик обновляется в downloadVisitPhotos)
             await downloadVisitPhotos(visitData, (count) => {
-              // Счетчик должен ТОЛЬКО увеличиваться, не перезаписываясь
               state.offlineProgress.photos += count;
               updateOfflineProgressModal();
             });
+
+            // 2. Показываем, что теперь сохраняем в память
+            const textEl = document.getElementById('offlineProgressText');
+            if (textEl) textEl.textContent = 'Сохранение в память...';
+            
+            // Даем браузеру 100 мс, чтобы отрисовать текст, прежде чем он зависнет на записи
+            await new Promise(r => setTimeout(r, 100));
+
+            // 3. Записываем в IndexedDB
             await window.db.saveOfflineVisit({
               clientId: v.clientId,
               kvNumber: kv,
@@ -2204,6 +2210,9 @@ async function startSelectedOfflineDownload() {
               email: v.email,
               payload: visitData.payload
             });
+
+            // Возвращаем текст обратно
+            if (textEl) textEl.textContent = `Квартира ${state.offlineProgress.current} из ${state.offlineProgress.total} (№ ${state.offlineProgress.kv})`;
           }
         }
       }
@@ -2211,7 +2220,7 @@ async function startSelectedOfflineDownload() {
     } catch (err) {
       console.warn('[offline download] kv', kv, err.message);
     }
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 100));
   }
 
   state.offlineDownloading = false;
