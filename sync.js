@@ -1,4 +1,4 @@
-// ================= Движок синхронизации v8 =================
+// ================= Движок синхронизации v9 =================
 const SYNC_INTERVAL_OK_MS = 30 * 1000;
 const SYNC_INTERVAL_BAD_MS = 2 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 60 * 1000;
@@ -229,9 +229,46 @@ async function syncVisit(visit) {
   await new Promise(r => setTimeout(r, 1000)); 
 
   let photosUploaded = 0;
-  const photos = await window.db.getPhotosForVisit(visit.clientId);
-  const totalPhotos = photos.length;
+  
+  // Собираем все фото из базы для этого осмотра
+  const allDbPhotos = await window.db.getPhotosForVisit(visit.clientId);
+  const dbPhotosMap = {};
+  allDbPhotos.forEach(p => {
+    if (p.photoId) dbPhotosMap[p.photoId] = p;
+    if (p.fileName) dbPhotosMap[p.fileName] = p;
+  });
 
+  let photosToUpload = [];
+  const collectPhotos = (arr) => {
+    (arr || []).forEach(p => {
+      let dbPhoto = null;
+      if (p.photoId) dbPhoto = dbPhotosMap[p.photoId];
+      else if (p.name) dbPhoto = dbPhotosMap[p.name];
+      
+      if (dbPhoto) photosToUpload.push(dbPhoto);
+    });
+  };
+
+  Object.keys(visit.payload.results || {}).forEach(sk => {
+    collectPhotos(visit.payload.results[sk].commonPhotos);
+    Object.keys(visit.payload.results[sk].photosByVariant || {}).forEach(v => {
+      collectPhotos(visit.payload.results[sk].photosByVariant[v]);
+    });
+  });
+  collectPhotos(visit.payload.extraPhotos);
+
+  // Убираем дубликаты
+  const uniquePhotos = [];
+  const seen = new Set();
+  photosToUpload.forEach(p => {
+    if (!seen.has(p.photoId)) {
+      seen.add(p.photoId);
+      uniquePhotos.push(p);
+    }
+  });
+  photosToUpload = uniquePhotos;
+
+  const totalPhotos = photosToUpload.length;
   await window.db.updateVisit(visit.clientId, {
     progress: { stage: 'photos', current: 0, total: totalPhotos }
   });
@@ -239,8 +276,8 @@ async function syncVisit(visit) {
 
   const photoMap = {};
 
-  for (let i = 0; i < photos.length; i++) {
-    const photo = photos[i];
+  for (let i = 0; i < photosToUpload.length; i++) {
+    const photo = photosToUpload[i];
     if (!navigator.onLine) throw new Error('Офлайн, синхронизация прервана');
 
     if (photo.status === 'uploaded' && photo.remote) {
@@ -271,7 +308,7 @@ async function syncVisit(visit) {
       throw new Error('Ошибка загрузки фото: ' + err.message);
     }
 
-    if (i < photos.length - 1) {
+    if (i < photosToUpload.length - 1) {
       await sleep(PHOTO_PAUSE_MS);
     }
   }
@@ -311,7 +348,8 @@ async function syncVisit(visit) {
     progress: null
   });
 
-  for (const p of photos) {
+  // Удаляем фото из базы только после успешной отправки
+  for (const p of photosToUpload) {
     await window.db.deletePhoto(p.photoId);
   }
 
