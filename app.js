@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -2980,10 +2980,34 @@ async function downloadVisitPhotos(visitData) {
 
 async function fetchPhotoAsBlob(url) {
   try {
-    const resp = await fetch(url);
-    if (!resp.ok) return null;
-    return await resp.blob();
+    // Извлекаем ID файла из ссылки вида https://drive.google.com/uc?id=XXXX
+    const match = url.match(/[?&]id=([^&]+)/);
+    const fileId = match ? match[1] : null;
+
+    if (!fileId) {
+      console.warn('[fetchPhotoAsBlob] Не удалось извлечь fileId из URL:', url);
+      return null;
+    }
+
+    // Запрашиваем фото через наш сервер (GAS), чтобы обойти CORS
+    const res = await apiGet('getPhotoBase64', { fileId: fileId }, 15000);
+    const data = (res && res.data) ? res.data : res;
+
+    if (!data || !data.ok || !data.base64) {
+      console.warn('[fetchPhotoAsBlob] Сервер не вернул base64 для', fileId);
+      return null;
+    }
+
+    // Превращаем base64 обратно в Blob
+    const byteCharacters = atob(data.base64);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    return new Blob([byteArray], { type: data.mimeType || 'image/jpeg' });
   } catch (e) {
+    console.warn('[fetchPhotoAsBlob] Ошибка:', e.message);
     return null;
   }
 }
