@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '1.9.3';
+const APP_VERSION = '1.9.4';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1994,7 +1994,6 @@ async function downloadVisitPhotos(visitData, onProgress) {
       const photoId = window.db.uuid();
       const fileName = buildFileName(task.stateKey.split('.')[0] || 'server', task.stateKey.split('.')[1] || 'photo', task.idx + 1);
       
-      // ВОТ ГЛАВНОЕ: создаем localUrl для отображения!
       const localUrl = URL.createObjectURL(blob);
       const remoteData = { url: task.url };
 
@@ -2010,11 +2009,10 @@ async function downloadVisitPhotos(visitData, onProgress) {
         attempts: 0,
         lastError: '',
         remote: remoteData,
-        localUrl: localUrl, // Сохраняем ссылку
+        localUrl: localUrl, 
         fromServer: true
       });
 
-      // Привязываем localUrl к объекту в payload, чтобы превью работало
       const rs = task.isExtra ? null : payload.results[task.stateKey];
       if (task.isExtra) {
         payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: localUrl, name: fileName, fromServer: true, remote: remoteData };
@@ -2026,7 +2024,7 @@ async function downloadVisitPhotos(visitData, onProgress) {
       }
       
       downloaded++;
-      if (onProgress) onProgress(downloaded);
+      if (onProgress) onProgress(downloaded); // Передаем 1 фото
     } catch (err) {
       console.warn('[downloadVisitPhotos] Ошибка фото:', task.url, err.message);
     }
@@ -2104,13 +2102,13 @@ async function startSelectedOfflineDownload() {
 
   state.offlineDownloading = true;
   state.offlineShowProgressModal = true;
+  // СБРАСЫВАЕМ счетчики перед началом!
   state.offlineProgress = { current: 0, total: selected.length, kv: '', photos: 0, totalPhotos: 0 };
   
   renderOfflineProgressModal();
 
   let successCount = 0;
-  let totalPhotosCount = 0;
-
+  
   // Сначала узнаем, сколько всего фото (для прогресс-бара)
   try {
     for (const kv of selected) {
@@ -2123,12 +2121,12 @@ async function startSelectedOfflineDownload() {
           if (visitData && visitData.found) {
             // Считаем количество фото
             Object.keys(visitData.payload.results || {}).forEach(sk => {
-              totalPhotosCount += (visitData.payload.results[sk].commonPhotos || []).length;
+              state.offlineProgress.totalPhotos += (visitData.payload.results[sk].commonPhotos || []).length;
               Object.keys(visitData.payload.results[sk].photosByVariant || {}).forEach(v => {
-                totalPhotosCount += (visitData.payload.results[sk].photosByVariant[v] || []).length;
+                state.offlineProgress.totalPhotos += (visitData.payload.results[sk].photosByVariant[v] || []).length;
               });
             });
-            totalPhotosCount += (visitData.payload.extraPhotos || []).length;
+            state.offlineProgress.totalPhotos += (visitData.payload.extraPhotos || []).length;
           }
         }
       }
@@ -2137,7 +2135,6 @@ async function startSelectedOfflineDownload() {
     console.warn('[offline] Ошибка подсчета фото:', e.message);
   }
   
-  state.offlineProgress.totalPhotos = totalPhotosCount;
   updateOfflineProgressModal();
 
   // Теперь скачиваем
@@ -2156,6 +2153,7 @@ async function startSelectedOfflineDownload() {
           const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
           if (visitData && visitData.found) {
             await downloadVisitPhotos(visitData, (count) => {
+              // Счетчик должен ТОЛЬКО увеличиваться, не перезаписываясь
               state.offlineProgress.photos += count;
               updateOfflineProgressModal();
             });
@@ -2180,7 +2178,7 @@ async function startSelectedOfflineDownload() {
   state.offlineShowProgressModal = false;
   closeOfflineProgressModal();
   
-  alert(`✅ Скачано квартир: ${successCount}. Скачано фото: ${state.offlineProgress.photos} из ${totalPhotosCount}.`);
+  alert(`✅ Скачано квартир: ${successCount}. Скачано фото: ${state.offlineProgress.photos} из ${state.offlineProgress.totalPhotos}.`);
   closeOfflineDownloadScreen();
 }
 
@@ -2248,11 +2246,13 @@ function updateOfflineProgressModal() {
   // Считаем процент по квартирам
   const kvPercent = p.total > 0 ? Math.round((p.current / p.total) * 100) : 0;
   
-  // Считаем процент по фото, если знаем общее
+  // Считаем процент по фото
   let photoInfo = '';
   if (p.totalPhotos > 0) {
-    const photoPercent = Math.round((p.photos / p.totalPhotos) * 100);
-    photoInfo = `Фото: ${p.photos} из ${p.totalPhotos} (${photoPercent}%)`;
+    // Защита от 339%: не даем превысить 100%
+    const currentPhotos = Math.min(p.photos, p.totalPhotos);
+    const photoPercent = Math.round((currentPhotos / p.totalPhotos) * 100);
+    photoInfo = `Фото: ${currentPhotos} из ${p.totalPhotos} (${photoPercent}%)`;
     fill.style.width = photoPercent + '%';
   } else {
     fill.style.width = kvPercent + '%';
@@ -2261,7 +2261,6 @@ function updateOfflineProgressModal() {
   text.textContent = `Квартира ${p.current} из ${p.total} (№ ${p.kv})`;
   if (photosText) photosText.textContent = photoInfo;
 }
-
 function closeOfflineProgressModal() { const el = document.getElementById('offlineProgressBackdrop'); if (el) el.remove(); }
 
 // ================= ЭКСПОРТ ДЛЯ ONCLICK =================
