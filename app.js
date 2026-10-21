@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.10';
+const APP_VERSION = '2.1.11';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -49,7 +49,10 @@ const state = {
   offlineDownloadedMap: {},
   offlineDownloading: false,
   offlineProgress: { current: 0, total: 0, kv: '', photos: 0, totalPhotos: 0 },
-  offlineShowProgressModal: false
+  offlineShowProgressModal: false,
+    offlineKvExpanded: {}, // Для раскрытых квартир
+  offlineTree: [],       // Дерево квартир и осмотров
+  offlineDownloadedClientIds: [] // ID уже скачанных осмотров
 };
 
 let _deletingPhoto = false;
@@ -2257,33 +2260,54 @@ async function fetchPhotoAsBlob(url) {
 async function openOfflineDownloadScreen() {
   state.offlineDownloadScreen = true;
   state.screen = 'settings';
-  state.offlineKvList = [];
+  state.offlineTree = [];
   state.offlineKvSelected = {};
+  state.offlineKvExpanded = {};
   state.offlineSearch = '';
+  state.offlineDownloadedClientIds = [];
   
   try {
     state.offlineDownloadedMap = await window.db.getAllOfflineVisitsInfo();
+    const downloadedVisits = await window.db.getAllOfflineVisits();
+    state.offlineDownloadedClientIds = downloadedVisits.map(v => v.clientId);
   } catch (e) {
     state.offlineDownloadedMap = {};
   }
 
   render(); 
 
-  if (!navigator.onLine) return;
+  if (!navigator.onLine) {
+    try {
+      const offlineVisits = await window.db.getAllOfflineVisits();
+      const kvMap = {};
+      offlineVisits.forEach(v => {
+        const kv = String(v.kvNumber).trim();
+        if (!kvMap[kv]) kvMap[kv] = [];
+        kvMap[kv].push({ clientId: v.clientId, date: v.visitedAt, email: v.email });
+      });
+      
+      state.offlineTree = Object.keys(kvMap).map(kv => {
+        const visits = kvMap[kv].sort((a, b) => new Date(b.date) - new Date(a.date));
+        return { kv: kv, visits: visits };
+      }).sort((a, b) => a.kv.localeCompare(b.kv, undefined, { numeric: true }));
+    } catch (e) { state.offlineTree = []; }
+    render();
+    return;
+  }
 
   try {
     const res = await apiGet('getAllVisitedApartments');
-    let list = [];
-    if (res && res.data && Array.isArray(res.data.data)) list = res.data.data;
-    else if (res && res.data && Array.isArray(res.data)) list = res.data;
-    else if (Array.isArray(res)) list = res;
+    let serverList = (res && res.data && Array.isArray(res.data.data)) ? res.data.data : [];
     
-    const allKvs = new Set([...list, ...Object.keys(state.offlineDownloadedMap)]);
-    state.offlineKvList = Array.from(allKvs).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    
+    // Если сервер вернул старый формат (массив строк)
+    if (serverList.length > 0 && typeof serverList[0] === 'string') {
+      serverList = serverList.map(kv => ({ kv: kv, visits: [] }));
+    }
+
+    state.offlineTree = serverList;
   } catch (e) {
-    console.warn('[offline] Ошибка загрузки списка с сервера:', e);
-    state.offlineKvList = Object.keys(state.offlineDownloadedMap);
+    console.warn('[offline] Ошибка загрузки с сервера:', e);
+    state.offlineTree = [];
   }
   render();
 }
@@ -2312,158 +2336,51 @@ function toggleOfflineSelectAll() {
 
 function onOfflineSearchInput(value) { state.offlineSearch = value; render(); }
 
+function toggleKvExpand(kv) {
+  state.offlineKvExpanded[kv] = !state.offlineKvExpanded[kv];
+  render();
+}
+
+function toggleOfflineVisit(clientId) {
+  if (state.offlineKvSelected[clientId]) delete state.offlineKvSelected[clientId];
+  else state.offlineKvSelected[clientId] = true;
+  render(); 
+}
+
+function toggleOfflineKv(kv) {
+  const item = state.offlineTree.find(x => x.kv === kv);
+  if (!item) return;
+  
+  const allSelected = item.visits.length > 0 && item.visits.every(v => state.offlineKvSelected[v.clientId]);
+  
+  if (allSelected) {
+    item.visits.forEach(v => delete state.offlineKvSelected[v.clientId]);
+  } else {
+    item.visits.forEach(v => state.offlineKvSelected[v.clientId] = true);
+  }
+  render();
+}
+
 async function startSelectedOfflineDownload() {
-  const selected = Object.keys(state.offlineKvSelected);
-  if (!selected.length) {
-    alert('Выберите хотя бы одну квартиру.');
+  const selectedIds = Object.keys(state.offlineKvSelected);
+  if (!selectedIds.length) {
+    alert('Выберите хотя бы один осмотр.');
     return;
   }
 
   state.offlineDownloading = true;
-  state.offlineShowProgressModal = true;
-  state.offlineProgress = { current: 0, total: selected.length, kv: '', photos: 0, totalPhotos: 0 };
-  
-  renderOfflineProgressModal();
+  state.offlineKvSelected = {}; 
+  render(); 
 
-  let successCount = 0;
-  
-  // Считаем общее количество фото
-  try {
-    for (const kv of selected) {
-      const listRes = await apiGet('getVisitsByKv', { kvNumber: kv });
-      const listData = (listRes && listRes.data) ? listRes.data : listRes;
-      if (listData.found && listData.visits) {
-        for (const v of listData.visits) {
-          const visitRes = await apiGet('getVisitById', { clientId: v.clientId });
-          const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
-          if (visitData && visitData.found) {
-            Object.keys(visitData.payload.results || {}).forEach(sk => {
-              state.offlineProgress.totalPhotos += (visitData.payload.results[sk].commonPhotos || []).length;
-              Object.keys(visitData.payload.results[sk].photosByVariant || {}).forEach(v => {
-                state.offlineProgress.totalPhotos += (visitData.payload.results[sk].photosByVariant[v] || []).length;
-              });
-            });
-            state.offlineProgress.totalPhotos += (visitData.payload.extraPhotos || []).length;
-          }
-        }
-      }
-    }
-  } catch (e) { console.warn('[offline] Ошибка подсчета фото:', e.message); }
-  
-  updateOfflineProgressModal();
+  await window.db.setMeta('offline_download_state', {
+    pending: selectedIds, 
+    total: selectedIds.length,
+    done: [],
+    startedAt: new Date().toISOString()
+  });
 
-  // Скачиваем
-  for (let i = 0; i < selected.length; i++) {
-    const kv = selected[i];
-    state.offlineProgress.current = i + 1;
-    state.offlineProgress.kv = kv;
-    
-    // СБРАСЫВАЕМ счетчик фото для ЭТОЙ квартиры (важно!)
-    state.offlineProgress.photos = 0; 
-    updateOfflineProgressModal();
-
-    try {
-      const listRes = await apiGet('getVisitsByKv', { kvNumber: kv });
-      const listData = (listRes && listRes.data) ? listRes.data : listRes;
-      if (listData.found && listData.visits) {
-        for (const v of listData.visits) {
-          const visitRes = await apiGet('getVisitById', { clientId: v.clientId });
-          const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
-          if (visitData && visitData.found) {
-            
-            await downloadVisitPhotos(visitData, (count) => {
-              state.offlineProgress.photos += count;
-              updateOfflineProgressModal();
-            });
-            
-            // Сохраняем осмотр в фоне, без await
-            window.db.saveOfflineVisit({
-              clientId: v.clientId,
-              kvNumber: kv,
-              visitedAt: v.visitedAt,
-              email: v.email,
-              payload: visitData.payload
-            }).catch(e => console.warn('Фоновая запись осмотра:', e));
-          }
-        }
-      }
-      successCount++;
-    } catch (err) {
-      console.warn('[offline download] kv', kv, err.message);
-    }
-    await new Promise(r => setTimeout(r, 300));
-  }
-
-  // Ждем, чтобы база данных успела дописать данные в фоне
-  await new Promise(r => setTimeout(r, 1000));
-
-  state.offlineDownloading = false;
-  state.offlineShowProgressModal = false;
-  closeOfflineProgressModal();
-  
-  alert(`✅ Скачано квартир: ${successCount}. Всего фото: ${state.offlineProgress.totalPhotos}.`);
-  closeOfflineDownloadScreen();
+  await processOfflineDownloadQueue();
 }
-function renderOfflineDownloadScreen(app) {
-  const search = state.offlineSearch.toLowerCase().trim();
-  const filtered = state.offlineKvList.filter(kv => kv.toLowerCase().includes(search));
-  const visibleSelected = filtered.filter(kv => state.offlineKvSelected[kv]).length;
-  const allVisibleSelected = filtered.length > 0 && visibleSelected === filtered.length;
-  
-  const totalDownloaded = Object.keys(state.offlineDownloadedMap).length;
-
-  app.innerHTML = `
-    <div class="card">
-      <div class="step-header">
-        <h2>Скачать для офлайна</h2>
-        <p>Уже скачано квартир: <b>${totalDownloaded}</b>.</p>
-      </div>
-      
-      <div class="field-group">
-        <input class="field-input" type="text" placeholder="Поиск по номеру..." value="${escapeHtml(state.offlineSearch)}" oninput="onOfflineSearchInput(this.value)">
-      </div>
-
-      <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
-        <div style="font-size:13px; color:#7A7A7A;">Найдено: ${filtered.length}</div>
-        <button class="btn btn-secondary" style="width:auto; padding:6px 14px; font-size:13px;" onclick="toggleOfflineSelectAll()">${allVisibleSelected ? 'Снять все' : 'Выбрать все'}</button>
-      </div>
-
-      <div style="max-height: 400px; overflow-y: auto; background: #FAFAFA; border-radius: 12px; padding: 8px; margin-bottom: 16px;">
-        ${filtered.length === 0 ? '<div style="text-align:center; padding:20px; color:#9AA0A6;">Список пуст</div>' : ''}
-        ${filtered.map(kv => {
-          const isSelected = state.offlineKvSelected[kv];
-          const downloadedInfo = state.offlineDownloadedMap[kv];
-          const isDownloaded = !!downloadedInfo;
-          
-          let downloadedDateStr = '';
-          if (isDownloaded && downloadedInfo.visitedAt) {
-            downloadedDateStr = new Date(downloadedInfo.visitedAt).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' });
-          }
-
-          return `
-            <div style="display:flex; align-items:center; padding:12px; border-radius:10px; margin-bottom:6px; background:${isSelected ? '#E6F7EA' : '#fff'}; border: 2px solid ${isSelected ? '#00A82D' : 'transparent'}; cursor:pointer; position:relative;" onclick="toggleOfflineKv('${escapeAttr(kv)}')">
-              
-              <div style="width:24px; height:24px; border-radius:6px; border:2px solid ${isSelected ? '#00A82D' : '#D0D0D0'}; background:${isSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0;">
-                ${isSelected ? '✓' : ''}
-              </div>
-              
-              <div style="flex:1;">
-                <div style="font-size:15px; font-weight:600;">Квартира ${escapeHtml(kv)}</div>
-                ${isDownloaded ? `<div style="font-size:11px; color:#00A82D; font-weight:600; margin-top:2px;">Скачано ${downloadedDateStr}</div>` : ''}
-              </div>
-
-              ${isDownloaded ? `<div style="font-size:20px; color:#00A82D; margin-left:8px;">📥</div>` : ''}
-            </div>
-          `;
-        }).join('')}
-      </div>
-
-      <button class="btn btn-primary btn-large" style="margin-bottom:10px;" onclick="startSelectedOfflineDownload()" ${visibleSelected === 0 ? 'disabled' : ''}>📥 Скачать выбранные (${visibleSelected})</button>
-      <button class="btn btn-secondary" onclick="closeOfflineDownloadScreen()">← Назад</button>
-    </div>
-  `;
-}
-
 function renderOfflineProgressModal() {
   const existing = document.getElementById('offlineProgressBackdrop');
   if (existing) existing.remove();
