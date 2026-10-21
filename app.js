@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.6';
+const APP_VERSION = '2.1.7';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1015,19 +1015,43 @@ async function onKvNext() {
   if (state.existingVisit && state.existingVisit.payload) {
     const payload = state.existingVisit.payload;
     
+    // Показываем заглушку, пока идет проверка фото
+    const app = document.getElementById('app');
+    app.innerHTML = '<div class="loading">Подготовка фото...</div>';
+
     const restoreUrls = async (arr) => {
       for (const p of (arr || [])) {
-        // Если фото было загружено с сервера и сохранено в базу
         if (p.photoId && !p.localUrl) {
-          const dbPhoto = await window.db.getPhoto(p.photoId);
+          // 1. Ищем фото в памяти телефона (работает офлайн)
+          let dbPhoto = await window.db.getPhoto(p.photoId);
+          
+          // 2. Если в памяти нет, но есть интернет — качаем с сервера на лету
+          if (!dbPhoto && p.remote && p.remote.url && navigator.onLine) {
+            try {
+              const blob = await fetchPhotoAsBlob(p.remote.url);
+              if (blob) {
+                // Сохраняем в базу на будущее (для офлайна)
+                const base64 = await new Promise((resolve) => {
+                  const reader = new FileReader();
+                  reader.onloadend = () => resolve(reader.result);
+                  reader.readAsDataURL(blob);
+                });
+                await window.db.addPhoto({
+                  photoId: p.photoId,
+                  visitClientId: state.existingVisit.clientId,
+                  stateKey: '', variantKey: '', fileName: '', kvNumber: state.form.kvNumber,
+                  blob: blob, base64: base64, status: 'uploaded', remote: p.remote, localUrl: base64
+                });
+                dbPhoto = { base64: base64, blob: blob };
+              }
+            } catch (e) { console.warn('Не удалось скачать фото с сервера', e); }
+          }
+
+          // 3. Отображаем
           if (dbPhoto) {
-            if (dbPhoto.base64) {
-              p.localUrl = dbPhoto.base64; // Используем сохраненный Base64
-            } else if (dbPhoto.blob) {
-              p.localUrl = URL.createObjectURL(dbPhoto.blob);
-            }
+            p.localUrl = dbPhoto.base64 || (dbPhoto.blob ? URL.createObjectURL(dbPhoto.blob) : '');
           } else if (p.remote && p.remote.url) {
-            // Если в базе нет (например, очистили), ставим ссылку с сервера
+            // В офлайне, если фото не скачано, ставим прямую ссылку
             p.localUrl = p.remote.url;
           }
         }
@@ -1044,9 +1068,11 @@ async function onKvNext() {
     });
     promises.push(restoreUrls(payload.extraPhotos));
     
+    // Ждем, пока все фото проверятся/скачаются
     await Promise.all(promises);
   }
 
+  // Переходим на следующий экран
   if (state.existingVisit && state.existingVisit.payload) {
     const prev = state.existingVisit.payload;
     state.form.results = prev.results || {};
