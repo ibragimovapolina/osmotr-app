@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.18';
+const APP_VERSION = '2.1.19';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -2335,7 +2335,7 @@ function renderOfflineDownloadScreen(app) {
   if (!hasVisibleVisits) allVisibleSelected = false;
 
   let pendingHtml = '';
-  // Если есть прерванная загрузка и мы сейчас НЕ качаем
+  // Если есть прерванная загрузка И мы сейчас НЕ качаем
   if (state.pendingDownloadState && state.pendingDownloadState.pending && state.pendingDownloadState.pending.length > 0 && !state.offlineDownloading) {
     pendingHtml = `
       <div class="card" style="background:#FFF3E0; border:2px solid #FF9800; margin-bottom:16px;">
@@ -2601,19 +2601,25 @@ async function processOfflineDownloadQueue() {
     state.offlineDownloading = false;
     const el = document.getElementById('globalProgressToast');
     if (el) el.remove();
+    const appEl = document.getElementById('app');
+    if (appEl) appEl.style.paddingTop = '';
     return;
   }
 
   let successCount = dlState.done.length;
   const total = dlState.total;
 
-  // Создаем или обновляем глобальную плашку поверх ВСЕГО приложения
+  // Создаем или обновляем глобальную плашку
   let toast = document.getElementById('globalProgressToast');
   if (!toast) {
     toast = document.createElement('div');
     toast.id = 'globalProgressToast';
-    toast.style = 'position:fixed; top:10px; left:10px; right:10px; background:#2A2A2A; color:#fff; padding:16px; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.4); z-index:10000; display:flex; flex-direction:column;';
+    toast.style = 'position:fixed; top:0; left:0; right:0; background:#2A2A2A; color:#fff; padding:16px 20px; border-radius:0 0 12px 12px; box-shadow:0 4px 12px rgba(0,0,0,0.4); z-index:10000; display:flex; flex-direction:column; transition: transform 0.3s ease;';
     document.body.appendChild(toast);
+    
+    // Сдвигаем контент вниз, чтобы плашка не перекрывала его
+    const appEl = document.getElementById('app');
+    if (appEl) appEl.style.paddingTop = '100px';
   }
 
   const updateProgressUI = (text, percent, photoText) => {
@@ -2681,7 +2687,7 @@ async function processOfflineDownloadQueue() {
       }
       state.offlineDownloadedMap = await window.db.getAllOfflineVisitsInfo();
       
-      // Если мы сейчас на экране скачивания — обновим счетчик и чекбоксы без render()
+      // Если мы на экране скачивания, обновляем счетчик
       if (state.offlineDownloadScreen) {
         const countEl = document.querySelector('.step-header p b');
         if (countEl) countEl.textContent = state.offlineDownloadedClientIds.length;
@@ -2702,7 +2708,12 @@ async function processOfflineDownloadQueue() {
   if (toast) {
     toast.style.background = '#00A82D';
     toast.innerHTML = `<div style="text-align:center; font-weight:600;">✅ Готово! Скачано: ${successCount} осм.</div>`;
-    setTimeout(() => { toast.remove(); }, 3000);
+    setTimeout(() => { 
+      toast.remove(); 
+      // Возвращаем контент на место
+      const appEl = document.getElementById('app');
+      if (appEl) appEl.style.paddingTop = ''; 
+    }, 3000);
   }
 }
 
@@ -2716,6 +2727,13 @@ async function cancelOfflineDownload() {
   await window.db.setMeta('offline_download_state', null);
   state.pendingDownloadState = null;
   state.offlineDownloading = false;
+  
+  const el = document.getElementById('globalProgressToast');
+  if (el) el.remove();
+  
+  const appEl = document.getElementById('app');
+  if (appEl) appEl.style.paddingTop = '';
+  
   render();
 }
 
