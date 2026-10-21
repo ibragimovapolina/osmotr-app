@@ -328,9 +328,16 @@ async function syncVisit(visit) {
     throw new Error('Сервер вернул ошибку: ' + ((data && data.error) || 'неизвестно'));
   }
 
-  await sleep(500);
+    await sleep(500);
+  
+  // Если сервер вернул новый ClientID (при дополнении), используем его
+  let finalClientId = visit.clientId;
+  if (data && data.clientId) {
+    finalClientId = data.clientId;
+  }
+
   try {
-    const check = await apiGet('checkVisitExistsByClientId', { clientId: visit.clientId });
+    const check = await apiGet('checkVisitExistsByClientId', { clientId: finalClientId });
     const checkData = (check && check.data) ? check.data : check;
     if (!checkData || !checkData.found) {
       throw new Error('Отправка не подтверждена: строка не найдена в таблице по ClientID');
@@ -340,6 +347,13 @@ async function syncVisit(visit) {
       throw checkErr;
     }
   }
+
+  await window.db.updateVisit(visit.clientId, {
+    status: 'synced',
+    syncedAt: new Date().toISOString(),
+    serverRow: (data && data.row) || null,
+    progress: null
+  });
 
   await window.db.updateVisit(visit.clientId, {
     status: 'synced',
