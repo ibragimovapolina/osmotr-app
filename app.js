@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.5';
+const APP_VERSION = '2.1.6';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1015,21 +1015,20 @@ async function onKvNext() {
   if (state.existingVisit && state.existingVisit.payload) {
     const payload = state.existingVisit.payload;
     
-    // Функция восстановления
     const restoreUrls = async (arr) => {
       for (const p of (arr || [])) {
-        // Если есть photoId, но нет картинки, достаем её из базы
+        // Если фото было загружено с сервера и сохранено в базу
         if (p.photoId && !p.localUrl) {
           const dbPhoto = await window.db.getPhoto(p.photoId);
           if (dbPhoto) {
-            // Если сохранился Base64, используем его
             if (dbPhoto.base64) {
-              p.localUrl = dbPhoto.base64;
-            } 
-            // Если нет (старые фото), пробуем Blob (может не сработать)
-            else if (dbPhoto.blob) {
+              p.localUrl = dbPhoto.base64; // Используем сохраненный Base64
+            } else if (dbPhoto.blob) {
               p.localUrl = URL.createObjectURL(dbPhoto.blob);
             }
+          } else if (p.remote && p.remote.url) {
+            // Если в базе нет (например, очистили), ставим ссылку с сервера
+            p.localUrl = p.remote.url;
           }
         }
       }
@@ -1066,6 +1065,7 @@ async function onKvNext() {
 
 // ================= ШАГ 2 =================
 function renderNewVisitRef(app) {
+  state.isSubmittingRef = false;
   const apt = state.form.apartment || {};
   const edited = state.form.editedFields || {};
   const val = (field, fallback) => edited[field] !== undefined ? edited[field] : (fallback || '');
@@ -1107,18 +1107,30 @@ function onRefEditRoomsNum(value) {
 }
 
 async function onRefNext() {
+  if (state.isSubmittingRef) return;
+  state.isSubmittingRef = true;
+
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="loading">Загрузка...</div>'; // Показываем загрузку
+
   const apt = state.form.apartment || {};
   const edited = state.form.editedFields || {};
   state.form.apartment = Object.assign({}, apt, edited);
+  
   try {
     const data = await getFormDataSmart(state.form.apartment);
     state.form.divisions = data.divisions || [];
     state.form.currentDivisionIndex = 0;
     state.screen = 'division';
+    state.isSubmittingRef = false;
     render();
     window.scrollTo(0, 0);
     autoSave();
-  } catch (err) { alert('Ошибка загрузки разделов: ' + err.message); }
+  } catch (err) { 
+    state.isSubmittingRef = false;
+    alert('Ошибка загрузки разделов: ' + err.message); 
+    render(); // Возвращаем экран назад при ошибке
+  }
 }
 
 async function getFormDataSmart(apartment) {
@@ -1541,6 +1553,9 @@ function onDivisionBack() {
 
 // ================= ОТПРАВКА =================
 async function submitVisit() {
+  if (state.isSubmitting) return;
+  state.isSubmitting = true;
+  
   const app = document.getElementById('app');
   app.innerHTML = '<div class="loading">Сохранение…</div>';
   try {
@@ -1550,18 +1565,17 @@ async function submitVisit() {
     Object.keys(state.form.results).forEach(key => {
       const rs = state.form.results[key];
       
-      // Функция для правильной подготовки фото
       const preparePhotos = (arr) => {
         return (arr || []).map(p => {
-          // Если есть remote (это фото из прошлого осмотра, уже на сервере)
+          // Для старых фото
           if (p.remote && p.remote.url) {
-            return { photoId: p.photoId, name: p.name, url: p.url, remote: p.remote };
+            return { photoId: p.photoId, name: p.name, url: p.remote.url, remote: p.remote };
           }
-          // Если есть photoId (это новое фото, сфотографированное вручную)
+          // Для новых фото
           if (p.photoId) {
             return { photoId: p.photoId, name: p.name };
           }
-          // Если это офлайн-фото (нет photoId), передаем только имя, чтобы sync.js его нашел и загрузил
+          // Для офлайн-фото
           return { name: p.name };
         });
       };
@@ -1586,7 +1600,7 @@ async function submitVisit() {
       results: cleanResults,
       extraPhotos: (state.form.extraPhotos || []).map(p => {
         if (p.remote && p.remote.url) {
-          return { photoId: p.photoId, name: p.name, url: p.url, remote: p.remote, fromServer: true };
+          return { photoId: p.photoId, name: p.name, url: p.remote.url, remote: p.remote };
         }
         if (p.photoId) {
           return { photoId: p.photoId, name: p.name };
@@ -1606,9 +1620,11 @@ async function submitVisit() {
     state.screen = 'saved';
     state.submitResult = { clientId: clientId };
     state.draftId = null;
+    state.isSubmitting = false; // Сброс флага
     render();
     window.scrollTo(0, 0);
   } catch (err) {
+    state.isSubmitting = false; // Сброс флага при ошибке
     app.innerHTML = `<div class="error-box"><strong>Ошибка сохранения:</strong><br>${escapeHtml(err.message)}</div><button class="btn btn-secondary" onclick="submitVisit()">Попробовать снова</button>`;
   }
 }
