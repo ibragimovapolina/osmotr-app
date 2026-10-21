@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.7';
+const APP_VERSION = '2.1.8';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1008,71 +1008,126 @@ async function checkApartmentSmart(kv) {
     throw netErr;
   }
 }
+// Фоновая загрузка фото для онлайна
+async function backgroundDownloadPhotos(payload, kv) {
+  if (!navigator.onLine) return;
+  
+  const tasks = [];
+  Object.keys(payload.results || {}).forEach(stateKey => {
+    const rs = payload.results[stateKey];
+    (rs.commonPhotos || []).forEach((p, i) => {
+      if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey, variantKey: '', idx: i, isCommon: true });
+    });
+    Object.keys(rs.photosByVariant || {}).forEach(variant => {
+      (rs.photosByVariant[variant] || []).forEach((p, i) => {
+        if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey, variantKey: variant, idx: i, isCommon: false });
+      });
+    });
+  });
 
+  (payload.extraPhotos || []).forEach((p, i) => {
+    if (p.url && !p.photoId) tasks.push({ url: p.url, stateKey: '__extra__', variantKey: '', idx: i, isCommon: false, isExtra: true });
+  });
+
+  if (!tasks.length) return;
+
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    try {
+      const blob = await fetchPhotoAsBlob(task.url);
+      if (blob) {
+        const base64 = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.readAsDataURL(blob);
+        });
+
+        const photoId = window.db.uuid();
+        const fileName = buildFileName(task.stateKey.split('.')[0] || 'server', task.stateKey.split('.')[1] || 'photo', task.idx + 1);
+        const remoteData = { url: task.url };
+
+        // Сохраняем в базу
+        await window.db.addPhoto({
+          photoId: photoId,
+          visitClientId: 'bg_' + Date.now(), // Временный ID, так как это фоновая загрузка
+          stateKey: task.stateKey,
+          variantKey: task.variantKey,
+          fileName: fileName,
+          kvNumber: kv,
+          blob: blob,
+          base64: base64,
+          status: 'pending',
+          attempts: 0,
+          lastError: '',
+          remote: remoteData,
+          localUrl: base64,
+          fromServer: true
+        });
+
+        // Обновляем данные в памяти
+        if (task.isExtra) {
+          payload.extraPhotos[task.idx] = { photoId: photoId, localUrl: base64, name: fileName, fromServer: true, remote: remoteData };
+        } else {
+          const rs = payload.results[task.stateKey];
+          if (rs) {
+            const arr = task.isCommon ? (rs.commonPhotos || []) : (rs.photosByVariant[task.variantKey] || []);
+            arr[task.idx] = { photoId: photoId, localUrl: base64, name: fileName, fromServer: true, remote: remoteData };
+            if (task.isCommon) rs.commonPhotos = arr;
+            else rs.photosByVariant[task.variantKey] = arr;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[bg download] Ошибка фото:', task.url, err.message);
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+}
 async function onKvNext() {
   if (!state.form.apartment) return;
   
   if (state.existingVisit && state.existingVisit.payload) {
     const payload = state.existingVisit.payload;
+    const kv = state.form.kvNumber;
     
-    // Показываем заглушку, пока идет проверка фото
-    const app = document.getElementById('app');
-    app.innerHTML = '<div class="loading">Подготовка фото...</div>';
-
-    const restoreUrls = async (arr) => {
-      for (const p of (arr || [])) {
-        if (p.photoId && !p.localUrl) {
-          // 1. Ищем фото в памяти телефона (работает офлайн)
-          let dbPhoto = await window.db.getPhoto(p.photoId);
-          
-          // 2. Если в памяти нет, но есть интернет — качаем с сервера на лету
-          if (!dbPhoto && p.remote && p.remote.url && navigator.onLine) {
-            try {
-              const blob = await fetchPhotoAsBlob(p.remote.url);
-              if (blob) {
-                // Сохраняем в базу на будущее (для офлайна)
-                const base64 = await new Promise((resolve) => {
-                  const reader = new FileReader();
-                  reader.onloadend = () => resolve(reader.result);
-                  reader.readAsDataURL(blob);
-                });
-                await window.db.addPhoto({
-                  photoId: p.photoId,
-                  visitClientId: state.existingVisit.clientId,
-                  stateKey: '', variantKey: '', fileName: '', kvNumber: state.form.kvNumber,
-                  blob: blob, base64: base64, status: 'uploaded', remote: p.remote, localUrl: base64
-                });
-                dbPhoto = { base64: base64, blob: blob };
-              }
-            } catch (e) { console.warn('Не удалось скачать фото с сервера', e); }
-          }
-
-          // 3. Отображаем
+    // 1. Восстанавливаем то, что уже есть в базе (офлайн фото)
+    const restorePhotos = async (arr) => {
+      if (!arr) return;
+      for (let i = 0; i < arr.length; i++) {
+        const p = arr[i];
+        p.localUrl = null; 
+        if (p.photoId) {
+          const dbPhoto = await window.db.getPhoto(p.photoId);
           if (dbPhoto) {
-            p.localUrl = dbPhoto.base64 || (dbPhoto.blob ? URL.createObjectURL(dbPhoto.blob) : '');
-          } else if (p.remote && p.remote.url) {
-            // В офлайне, если фото не скачано, ставим прямую ссылку
-            p.localUrl = p.remote.url;
+            if (dbPhoto.base64) p.localUrl = dbPhoto.base64;
+            else if (dbPhoto.blob) p.localUrl = URL.createObjectURL(dbPhoto.blob);
           }
+        }
+        if (!p.localUrl) {
+          if (p.remote && p.remote.url) p.localUrl = p.remote.url;
+          else if (p.url) p.localUrl = p.url;
         }
       }
     };
 
-    const promises = [];
-    Object.keys(payload.results || {}).forEach(sk => {
+    for (const sk of Object.keys(payload.results || {})) {
       const rs = payload.results[sk];
-      promises.push(restoreUrls(rs.commonPhotos));
-      Object.keys(rs.photosByVariant || {}).forEach(v => {
-        promises.push(restoreUrls(rs.photosByVariant[v]));
-      });
-    });
-    promises.push(restoreUrls(payload.extraPhotos));
-    
-    // Ждем, пока все фото проверятся/скачаются
-    await Promise.all(promises);
+      await restorePhotos(rs.commonPhotos);
+      if (rs.photosByVariant) {
+        for (const variant of Object.keys(rs.photosByVariant)) {
+          await restorePhotos(rs.photosByVariant[variant]);
+        }
+      }
+    }
+    await restorePhotos(payload.extraPhotos);
+
+    // 2. Запускаем фоновую загрузку (не ждем её завершения, чтобы не тормозить интерфейс)
+    if (navigator.onLine) {
+      backgroundDownloadPhotos(payload, kv).catch(e => console.warn('Ошибка фоновой загрузки:', e));
+    }
   }
 
-  // Переходим на следующий экран
+  // 3. Переносим данные в форму
   if (state.existingVisit && state.existingVisit.payload) {
     const prev = state.existingVisit.payload;
     state.form.results = prev.results || {};
@@ -1084,11 +1139,11 @@ async function onKvNext() {
     state.draftId = window.db.uuid();
     state.form.sourceVisitId = null;
   }
+  
   state.screen = 'newVisitRef';
   render();
   autoSave();
 }
-
 // ================= ШАГ 2 =================
 function renderNewVisitRef(app) {
   state.isSubmittingRef = false;
@@ -1202,12 +1257,15 @@ function renderObjectCard(divKey, obj) {
   if (!objState.commonPhotos) objState.commonPhotos = [];
   if (!objState.photosByVariant) objState.photosByVariant = {};
 
-  const commonPhotosHtml = (objState.commonPhotos || []).map((p, i) => `
+  const commonPhotosHtml = (objState.commonPhotos || []).map((p, i) => {
+    // ВАЖНО: сначала localUrl (Base64/Blob для офлайна), потом url (ссылка с сервера)
+    const imgSrc = p.localUrl || p.url || '';
+    return `
     <div class="photo-item">
-      <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
+      <img src="${escapeAttr(imgSrc)}" alt="Фото ${i + 1}" class="photo-thumb">
       <button type="button" class="photo-remove" onclick="removePhotoFromSection('${escapeAttr(stateKey)}', '__common__', ${i})">${iconX(14)}</button>
     </div>
-  `).join('');
+  `}).join('');
 
   const commonUploading = state.form.uploading[stateKey + '__common__'];
   let commonUploadingHtml = '';
@@ -1232,12 +1290,16 @@ function renderObjectCard(divKey, obj) {
     let photosUnderChip = '';
     if (isSelected) {
       const photos = (objState.photosByVariant && objState.photosByVariant[v.variant]) || [];
-      const photosHtml = photos.map((p, i) => `
+      const photosHtml = photos.map((p, i) => {
+        // ВАЖНО: сначала localUrl (Base64/Blob для офлайна), потом url (ссылка с сервера)
+        const imgSrc = p.localUrl || p.url || '';
+        return `
         <div class="photo-item">
-          <img src="${escapeAttr(p.url || p.localUrl || '')}" alt="Фото ${i + 1}" class="photo-thumb">
+          <img src="${escapeAttr(imgSrc)}" alt="Фото ${i + 1}" class="photo-thumb">
           <button type="button" class="photo-remove" onclick="removePhotoFromSection('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}', ${i})">${iconX(14)}</button>
         </div>
-      `).join('');
+      `}).join('');
+      
       const uploading = state.form.uploading[stateKey + '__' + v.variant];
       let uploadingHtml = '';
       if (uploading) uploadingHtml = `<div class="photo-item photo-uploading"><div class="photo-spinner"></div><div class="photo-uploading-text">${uploading.current} из ${uploading.total}</div></div>`;
@@ -1279,7 +1341,6 @@ function renderObjectCard(divKey, obj) {
     </div>
   `;
 }
-
 function onChipClick(stateKey, variant, requireVolume, unit) {
   const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
   if (!rs.volumes) rs.volumes = {};
