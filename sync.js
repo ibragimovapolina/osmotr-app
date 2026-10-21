@@ -315,6 +315,7 @@ async function syncVisit(visit) {
 
   const payload = buildPayloadWithPhotos(visit.payload, photoMap);
   payload.clientId = visit.clientId;
+  payload.sourceVisitId = visit.payload.sourceVisitId || null; 
 
   await window.db.updateVisit(visit.clientId, {
     progress: { stage: 'submit', current: 0, total: 0 }
@@ -435,7 +436,8 @@ function buildPayloadWithPhotos(originalPayload, photoMap) {
 
   return Object.assign({}, originalPayload, {
     results: results,
-    extraPhotos: extraPhotos
+    extraPhotos: extraPhotos,
+  sourceVisitId: originalPayload.sourceVisitId || null // <--- ДОБАВИТЬ
   });
 }
 
