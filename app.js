@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.16';
+const APP_VERSION = '2.1.17';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -2314,102 +2314,7 @@ async function openOfflineDownloadScreen() {
   }
   render();
 }
-function updateCheckboxUI() {
-  const totalSelected = Object.keys(state.offlineKvSelected).length;
-  const btn = document.getElementById('downloadSelectedBtn');
-  
-  if (btn) {
-    btn.textContent = `📥 Скачать выбранные (${totalSelected})`;
-    btn.disabled = totalSelected === 0;
-  }
 
-  const allItems = state.offlineTree || [];
-  allItems.forEach(item => {
-    const allKvSelected = item.visits.length > 0 && item.visits.every(v => state.offlineKvSelected[v.clientId]);
-    
-    const kvCheckbox = document.getElementById(`kv-checkbox-${cssEscape(item.kv)}`);
-    if (kvCheckbox) {
-      kvCheckbox.style.borderColor = allKvSelected ? '#00A82D' : '#D0D0D0';
-      kvCheckbox.style.background = allKvSelected ? '#00A82D' : '#fff';
-      kvCheckbox.innerHTML = allKvSelected ? '✓' : '';
-      
-      const headerDiv = kvCheckbox.closest('div[style*="background"]');
-      if (headerDiv) {
-        headerDiv.style.background = allKvSelected ? '#E6F7EA' : '#FAFAFA';
-      }
-    }
-
-    item.visits.forEach(v => {
-      const visitCheckbox = document.getElementById(`visit-checkbox-${v.clientId}`);
-      if (visitCheckbox) {
-        const isSelected = !!state.offlineKvSelected[v.clientId];
-        visitCheckbox.style.borderColor = isSelected ? '#00A82D' : '#D0D0D0';
-        visitCheckbox.style.background = isSelected ? '#00A82D' : '#fff';
-        visitCheckbox.innerHTML = isSelected ? '✓' : '';
-      }
-    });
-  });
-}
-
-function toggleKvExpand(kv) {
-  state.offlineKvExpanded[kv] = !state.offlineKvExpanded[kv];
-  const app = document.getElementById('app');
-  const scrollPos = window.scrollY; 
-  renderOfflineDownloadScreen(app);
-  window.scrollTo(0, scrollPos); 
-}
-
-function toggleOfflineVisit(clientId) {
-  if (state.offlineKvSelected[clientId]) delete state.offlineKvSelected[clientId];
-  else state.offlineKvSelected[clientId] = true;
-  updateCheckboxUI();
-}
-
-function toggleOfflineKv(kv) {
-  const item = state.offlineTree.find(x => x.kv === kv);
-  if (!item) return;
-  
-  const allSelected = item.visits.length > 0 && item.visits.every(v => state.offlineKvSelected[v.clientId]);
-  
-  if (allSelected) {
-    item.visits.forEach(v => delete state.offlineKvSelected[v.clientId]);
-  } else {
-    item.visits.forEach(v => state.offlineKvSelected[v.clientId] = true);
-  }
-  
-  updateCheckboxUI();
-}
-
-function toggleOfflineSelectAll() {
-  if (state.offlineDownloading) return;
-  
-  const search = state.offlineSearch.toLowerCase().trim();
-  const visibleItems = state.offlineTree.filter(item => item.kv.toLowerCase().includes(search));
-  
-  let allSelected = true;
-  let hasVisits = false;
-  
-  visibleItems.forEach(item => {
-    item.visits.forEach(v => {
-      hasVisits = true;
-      if (!state.offlineKvSelected[v.clientId]) allSelected = false;
-    });
-  });
-
-  if (!hasVisits) return;
-
-  if (allSelected) {
-    visibleItems.forEach(item => {
-      item.visits.forEach(v => delete state.offlineKvSelected[v.clientId]);
-    });
-  } else {
-    visibleItems.forEach(item => {
-      item.visits.forEach(v => state.offlineKvSelected[v.clientId] = true);
-    });
-  }
-  
-  updateCheckboxUI();
-}
 function renderOfflineDownloadScreen(app) {
   const search = state.offlineSearch.toLowerCase().trim();
   
@@ -2481,7 +2386,7 @@ function renderOfflineDownloadScreen(app) {
       <div style="margin-bottom:8px; background:#fff; border-radius:10px; border:1px solid #E0E0E0; overflow:hidden;">
         <div style="display:flex; align-items:center; padding:12px; background:${allKvSelected ? '#E6F7EA' : '#FAFAFA'}; cursor:pointer;">
           
-           <div id="kv-checkbox-${cssEscape(item.kv)}" class="kv-checkbox" style="width:24px; height:24px; border-radius:6px; border:2px solid ${allKvSelected ? '#00A82D' : '#D0D0D0'}; background:${allKvSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0;" onclick="event.stopPropagation(); toggleOfflineKv('${escapeAttr(item.kv)}')">
+          <div id="kv-checkbox-${cssEscape(item.kv)}" class="kv-checkbox" style="width:24px; height:24px; border-radius:6px; border:2px solid ${allKvSelected ? '#00A82D' : '#D0D0D0'}; background:${allKvSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0;" onclick="event.stopPropagation(); toggleOfflineKv('${escapeAttr(item.kv)}')">
             ${allKvSelected ? '✓' : ''}
           </div>
           
@@ -2505,7 +2410,7 @@ function renderOfflineDownloadScreen(app) {
         <p>Скачано осмотров: <b>${totalDownloaded}</b>.</p>
         ${isOffline ? '<div style="color:#c5221f; font-size:13px; margin-top:5px;">📴 Вы офлайн. Показаны только скачанные данные.</div>' : ''}
       </div>
-   
+      
       ${pendingHtml}
 
       <div class="field-group">
@@ -2527,19 +2432,66 @@ function renderOfflineDownloadScreen(app) {
   `;
 }
 
-function closeOfflineDownloadScreen() {
-  state.offlineDownloadScreen = false;
-  state.offlineKvSelected = {};
-  state.offlineTree = [];
-  render();
+function updateCheckboxUI() {
+  const totalSelected = Object.keys(state.offlineKvSelected).length;
+  const btn = document.getElementById('downloadSelectedBtn');
+  
+  if (btn) {
+    btn.textContent = `📥 Скачать выбранные (${totalSelected})`;
+    btn.disabled = totalSelected === 0;
+  }
+
+  const allItems = state.offlineTree || [];
+  allItems.forEach(item => {
+    const allKvSelected = item.visits.length > 0 && item.visits.every(v => state.offlineKvSelected[v.clientId]);
+    
+    const kvCheckbox = document.getElementById(`kv-checkbox-${cssEscape(item.kv)}`);
+    if (kvCheckbox) {
+      kvCheckbox.style.borderColor = allKvSelected ? '#00A82D' : '#D0D0D0';
+      kvCheckbox.style.background = allKvSelected ? '#00A82D' : '#fff';
+      kvCheckbox.innerHTML = allKvSelected ? '✓' : '';
+      
+      const headerDiv = kvCheckbox.closest('div[style*="background"]');
+      if (headerDiv) {
+        headerDiv.style.background = allKvSelected ? '#E6F7EA' : '#FAFAFA';
+      }
+    }
+
+    item.visits.forEach(v => {
+      const visitCheckbox = document.getElementById(`visit-checkbox-${v.clientId}`);
+      if (visitCheckbox) {
+        const isSelected = !!state.offlineKvSelected[v.clientId];
+        visitCheckbox.style.borderColor = isSelected ? '#00A82D' : '#D0D0D0';
+        visitCheckbox.style.background = isSelected ? '#00A82D' : '#fff';
+        visitCheckbox.innerHTML = isSelected ? '✓' : '';
+      }
+    });
+  });
 }
 
-
-function onOfflineSearchInput(value) { 
-  state.offlineSearch = value; 
-  render(); 
+function toggleKvExpand(kv) {
+  state.offlineKvExpanded[kv] = !state.offlineKvExpanded[kv];
+  
+  // Вместо render() (который прыгает наверх), мы запоминаем позицию скролла
+  const app = document.getElementById('app');
+  const scrollPos = window.scrollY; 
+  
+  renderOfflineDownloadScreen(app);
+  
+  // И возвращаем скролл на место
+  window.scrollTo(0, scrollPos); 
 }
 
+function toggleOfflineVisit(clientId) {
+  if (state.offlineKvSelected[clientId]) delete state.offlineKvSelected[clientId];
+  else state.offlineKvSelected[clientId] = true;
+  
+  updateCheckboxUI();
+}
+
+function toggleOfflineKv(kv) {
+  const item = state.offlineTree.find(x => x.kv === kv);
+  if (!item) return;
   
   const allSelected = item.visits.length > 0 && item.visits.every(v => state.offlineKvSelected[v.clientId]);
   
@@ -2548,7 +2500,44 @@ function onOfflineSearchInput(value) {
   } else {
     item.visits.forEach(v => state.offlineKvSelected[v.clientId] = true);
   }
-  render();
+  
+  updateCheckboxUI();
+}
+
+function toggleOfflineSelectAll() {
+  if (state.offlineDownloading) return;
+  
+  const search = state.offlineSearch.toLowerCase().trim();
+  const visibleItems = state.offlineTree.filter(item => item.kv.toLowerCase().includes(search));
+  
+  let allSelected = true;
+  let hasVisits = false;
+  
+  visibleItems.forEach(item => {
+    item.visits.forEach(v => {
+      hasVisits = true;
+      if (!state.offlineKvSelected[v.clientId]) allSelected = false;
+    });
+  });
+
+  if (!hasVisits) return;
+
+  if (allSelected) {
+    visibleItems.forEach(item => {
+      item.visits.forEach(v => delete state.offlineKvSelected[v.clientId]);
+    });
+  } else {
+    visibleItems.forEach(item => {
+      item.visits.forEach(v => state.offlineKvSelected[v.clientId] = true);
+    });
+  }
+  
+  updateCheckboxUI();
+}
+
+function onOfflineSearchInput(value) { 
+  state.offlineSearch = value; 
+  render(); 
 }
 
 async function startSelectedOfflineDownload() {
@@ -2584,12 +2573,10 @@ async function processOfflineDownloadQueue() {
   let successCount = dlState.done.length;
   const total = dlState.total;
 
-  // Функция для обновления плашки на экране
   const updateProgressUI = (text, percent, photoText) => {
     const el = document.getElementById('inlineDownloadProgress');
     if (!el) return;
     
-    // Если мы ушли с экрана скачивания, ничего не делаем
     el.innerHTML = `
       <div class="card" style="background:#2A2A2A; color:#fff; padding:16px; margin-bottom:16px; border-radius:12px;">
         <div style="font-size:14px; font-weight:600; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
@@ -2616,7 +2603,6 @@ async function processOfflineDownloadQueue() {
       const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
       
       if (visitData && visitData.found) {
-        // Считаем общее количество фото для этого осмотра
         let totalPhotos = 0;
         Object.keys(visitData.payload.results || {}).forEach(sk => {
           totalPhotos += (visitData.payload.results[sk].commonPhotos || []).length;
@@ -2628,7 +2614,6 @@ async function processOfflineDownloadQueue() {
 
         let downloadedPhotos = 0;
         
-        // Передаем колбэк, который будет обновлять счетчик фото
         await downloadVisitPhotos(visitData, (count) => {
           downloadedPhotos += count;
           updateProgressUI(
@@ -2653,13 +2638,11 @@ async function processOfflineDownloadQueue() {
       
       await window.db.setMeta('offline_download_state', dlState);
       
-      // Обновляем данные для интерфейса
       if (!state.offlineDownloadedClientIds.includes(clientId)) {
         state.offlineDownloadedClientIds.push(clientId);
       }
       state.offlineDownloadedMap = await window.db.getAllOfflineVisitsInfo();
       
-      // Чтобы не дергать весь интерфейс, обновляем только плашку и счетчик скачанных
       const totalDownloaded = (state.offlineDownloadedClientIds || []).length;
       const countEl = document.querySelector('.step-header p b');
       if (countEl) countEl.textContent = totalDownloaded;
@@ -2675,7 +2658,6 @@ async function processOfflineDownloadQueue() {
   state.pendingDownloadState = null;
   state.offlineDownloading = false;
 
-  // Финальный экран об успехе
   const el = document.getElementById('inlineDownloadProgress');
   if (el) {
     el.innerHTML = `
@@ -2683,9 +2665,10 @@ async function processOfflineDownloadQueue() {
         ✅ Готово! Скачано осмотров: ${successCount}
       </div>
     `;
-    setTimeout(() => { el.innerHTML = ''; }, 5000); // Прячем через 5 сек
+    setTimeout(() => { el.innerHTML = ''; }, 5000);
   }
 }
+
 async function resumeOfflineDownload() {
   state.offlineDownloading = true;
   await processOfflineDownloadQueue();
@@ -2699,11 +2682,14 @@ async function cancelOfflineDownload() {
   render();
 }
 
-function renderOfflineProgressModal() {
-  // Старая модалка больше не нужна, так как используется флоатинг прогресс
+function closeOfflineDownloadScreen() {
+  state.offlineDownloadScreen = false;
+  state.offlineKvSelected = {};
+  state.offlineTree = [];
+  const el = document.getElementById('inlineDownloadProgress');
+  if (el) el.innerHTML = '';
+  render();
 }
-
-function closeOfflineProgressModal() { const el = document.getElementById('offlineProgressBackdrop'); if (el) el.remove(); }
 
 // ================= ЭКСПОРТ ДЛЯ ONCLICK =================
 window.forcePingCheck = forcePingCheck;
