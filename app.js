@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.21';
+const APP_VERSION = '2.1.22';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1334,7 +1334,21 @@ function renderObjectCard(divKey, obj) {
   const variantsHtml = (obj.variants || []).map((v) => {
     const isSelected = objState.selected.includes(v.variant);
     const vol = objState.volumes[v.variant];
-    const volBadge = (isSelected && vol && vol.value) ? `<span class="volume-badge" onclick="event.stopPropagation(); editVolume('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}', '${escapeAttr(v.unit || '')}')">${escapeHtml(vol.value)} ${escapeHtml(vol.unit || '')}</span>` : '';
+    
+    // Логика бейджа объема
+    let volBadge = '';
+    if (isSelected) {
+      const hasVolume = vol && vol.value;
+      const requiresVolume = v.requireVolume;
+      
+      if (hasVolume) {
+        // Если объем уже есть - показываем зеленый бейдж с цифрой
+        volBadge = `<span class="volume-badge" onclick="event.stopPropagation(); editVolume('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}', '${escapeAttr(v.unit || '')}')">${escapeHtml(vol.value)} ${escapeHtml(vol.unit || '')}</span>`;
+      } else if (requiresVolume) {
+        // Если объем требуется, но его нет - показываем красную кнопку
+        volBadge = `<span class="volume-badge" style="background:#FFEBEE; color:#E53935; border: 1px solid #E53935;" onclick="event.stopPropagation(); editVolume('${escapeAttr(stateKey)}', '${escapeAttr(v.variant)}', '${escapeAttr(v.unit || '')}')">⚠ Указать объем</span>`;
+      }
+    }
 
     let photosUnderChip = '';
     if (isSelected) {
@@ -1638,19 +1652,24 @@ function removeExtraPhoto(index) {
 async function onDivisionNext() {
   const div = state.form.divisions[state.form.currentDivisionIndex];
   if (!div) return;
+  
   if (div.key === 'dopolnitelno') {
     if (state.form.currentDivisionIndex + 1 < state.form.divisions.length) { state.form.currentDivisionIndex++; render(); window.scrollTo(0, 0); autoSave(); return; }
     await submitVisit();
     return;
   }
+  
   let hasError = false;
   let firstErrorKey = null;
+  
   div.objects.forEach(obj => {
     const stateKey = div.key + '.' + obj.key;
     const rs = state.form.results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
     const hasSelection = rs.selected.length > 0;
     const hasCustom = String(rs.custom || '').trim().length > 0;
     const hasNoIssues = rs.noIssues === true;
+    
+    // 1. Проверка на пустой объект
     if (!hasSelection && !hasCustom && !hasNoIssues) {
       rs.error = 'Отметьте замечание, «Замечаний нет» или впишите своё';
       state.form.results[stateKey] = rs;
@@ -1658,6 +1677,8 @@ async function onDivisionNext() {
       if (!firstErrorKey) firstErrorKey = stateKey;
       return;
     }
+
+    // 2. Проверка на наличие фото
     const hasCommonPhotos = (rs.commonPhotos || []).length > 0;
     const hasAnyPhoto = hasCommonPhotos || Object.keys(rs.photosByVariant || {}).some(v => (rs.photosByVariant[v] || []).length > 0);
     if ((hasSelection || hasCustom) && !hasAnyPhoto) {
@@ -1665,8 +1686,35 @@ async function onDivisionNext() {
       state.form.results[stateKey] = rs;
       hasError = true;
       if (!firstErrorKey) firstErrorKey = stateKey;
+      return;
+    }
+
+    // 3. НОВАЯ ПРОВЕРКА: Проверка на заполнение объемов
+    if (rs.selected && rs.selected.length > 0) {
+      const volumes = rs.volumes || {};
+      const missingVolumes = [];
+      
+      rs.selected.forEach(variantName => {
+        // Ищем замечание в списке вариантов этого объекта
+        const variantObj = (obj.variants || []).find(v => v.variant === variantName);
+        if (variantObj && variantObj.requireVolume) {
+          const vol = volumes[variantName];
+          if (!vol || !vol.value || String(vol.value).trim() === '') {
+             missingVolumes.push(variantName);
+          }
+        }
+      });
+
+      if (missingVolumes.length > 0) {
+        rs.error = `Укажите объём для: ${missingVolumes.join(', ')}`;
+        state.form.results[stateKey] = rs;
+        hasError = true;
+        if (!firstErrorKey) firstErrorKey = stateKey;
+        return;
+      }
     }
   });
+  
   if (hasError) {
     render();
     setTimeout(() => {
@@ -1678,6 +1726,7 @@ async function onDivisionNext() {
     }, 50);
     return;
   }
+  
   if (state.form.currentDivisionIndex + 1 < state.form.divisions.length) { state.form.currentDivisionIndex++; render(); window.scrollTo(0, 0); autoSave(); return; }
   await submitVisit();
 }
@@ -1690,6 +1739,42 @@ function onDivisionBack() {
 // ================= ОТПРАВКА =================
 async function submitVisit() {
   if (state.isSubmitting) return;
+
+  // ПРОВЕРКА ОБЪЕМОВ ПЕРЕД ОТПРАВКОЙ
+  let missingVolumesError = null;
+  let errorDivisionIndex = -1;
+
+  state.form.divisions.forEach((div, divIdx) => {
+    div.objects.forEach(obj => {
+      const stateKey = div.key + '.' + obj.key;
+      const rs = state.form.results[stateKey];
+      
+      if (rs && rs.selected && rs.selected.length > 0 && !rs.noIssues) {
+        const volumes = rs.volumes || {};
+        rs.selected.forEach(variantName => {
+          const variantObj = (obj.variants || []).find(v => v.variant === variantName);
+          if (variantObj && variantObj.requireVolume) {
+            const vol = volumes[variantName];
+            if (!vol || !vol.value || String(vol.value).trim() === '') {
+              missingVolumesError = `В объекте "${obj.label}" не указан объем для замечания "${variantName}"`;
+              if (errorDivisionIndex === -1) errorDivisionIndex = divIdx;
+            }
+          }
+        });
+      }
+    });
+  });
+
+  if (missingVolumesError) {
+    alert(missingVolumesError);
+    // Перекидываем пользователя на тот экран, где есть ошибка
+    if (errorDivisionIndex !== -1) {
+      state.form.currentDivisionIndex = errorDivisionIndex;
+      render();
+    }
+    return;
+  }
+
   state.isSubmitting = true;
   
   const app = document.getElementById('app');
