@@ -515,4 +515,5 @@ window.sync = {
   stopAutoSync,
   resetAllAttempts,
   checkApiReachable
+
 };
