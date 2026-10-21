@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.20';
+const APP_VERSION = '2.1.21';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -464,7 +464,15 @@ async function showSettings() {
   render();
   window.scrollTo(0, 0);
 }
-
+function toggleSettingsBlock(key) {
+  if (!state.settingsExpanded) state.settingsExpanded = {};
+  state.settingsExpanded[key] = !state.settingsExpanded[key];
+  
+  // Запоминаем скролл, чтобы страница не прыгала
+  const scrollPos = window.scrollY;
+  render();
+  window.scrollTo(0, scrollPos);
+}
 async function renderSettings(app) {
   let refCount = 0;
   try {
@@ -2807,6 +2815,7 @@ window.toggleKvExpand = toggleKvExpand;
 window.toggleOfflineVisit = toggleOfflineVisit;
 window.resumeOfflineDownload = resumeOfflineDownload;
 window.cancelOfflineDownload = cancelOfflineDownload;
+window.toggleSettingsBlock = toggleSettingsBlock;
 
 // ================= SVG-ИКОНКИ (стиль Evernote) =================
 function iconHome(size) {
