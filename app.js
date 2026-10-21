@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.11';
+const APP_VERSION = '2.1.12';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -2257,59 +2257,111 @@ async function fetchPhotoAsBlob(url) {
 }
 
 // ================= ОФЛАЙН-СКАЧИВАНИЕ =================
-async function openOfflineDownloadScreen() {
-  state.offlineDownloadScreen = true;
-  state.screen = 'settings';
-  state.offlineTree = [];
-  state.offlineKvSelected = {};
-  state.offlineKvExpanded = {};
-  state.offlineSearch = '';
-  state.offlineDownloadedClientIds = [];
+function renderOfflineDownloadScreen(app) {
+  const search = state.offlineSearch.toLowerCase().trim();
   
-  try {
-    state.offlineDownloadedMap = await window.db.getAllOfflineVisitsInfo();
-    const downloadedVisits = await window.db.getAllOfflineVisits();
-    state.offlineDownloadedClientIds = downloadedVisits.map(v => v.clientId);
-  } catch (e) {
-    state.offlineDownloadedMap = {};
+  // Защита на случай, если дерево еще не загрузилось
+  const tree = state.offlineTree || [];
+  const filteredTree = tree.filter(item => item.kv.toLowerCase().includes(search));
+  
+  const totalSelected = Object.keys(state.offlineKvSelected).length;
+  const totalDownloaded = (state.offlineDownloadedClientIds || []).length;
+  const isOffline = !navigator.onLine;
+
+  // Плашка прерванного скачивания
+  let pendingHtml = '';
+  if (state.pendingDownloadState && state.pendingDownloadState.pending && state.pendingDownloadState.pending.length > 0) {
+    pendingHtml = `
+      <div class="card" style="background:#FFF3E0; border:2px solid #FF9800; margin-bottom:16px;">
+        <h3 style="color:#E65100; margin-bottom:8px;">⏳ Прерванное скачивание</h3>
+        <p style="font-size:14px; margin-bottom:12px;">Осталось скачать осмотров: <b>${state.pendingDownloadState.pending.length}</b></p>
+        <button class="btn btn-primary btn-large" style="background:#FF9800; border-color:#FF9800;" onclick="resumeOfflineDownload()">▶️ Продолжить скачивание</button>
+        <button class="btn btn-secondary" style="margin-top:8px;" onclick="cancelOfflineDownload()">Отменить</button>
+      </div>
+    `;
   }
 
-  render(); 
-
-  if (!navigator.onLine) {
-    try {
-      const offlineVisits = await window.db.getAllOfflineVisits();
-      const kvMap = {};
-      offlineVisits.forEach(v => {
-        const kv = String(v.kvNumber).trim();
-        if (!kvMap[kv]) kvMap[kv] = [];
-        kvMap[kv].push({ clientId: v.clientId, date: v.visitedAt, email: v.email });
-      });
-      
-      state.offlineTree = Object.keys(kvMap).map(kv => {
-        const visits = kvMap[kv].sort((a, b) => new Date(b.date) - new Date(a.date));
-        return { kv: kv, visits: visits };
-      }).sort((a, b) => a.kv.localeCompare(b.kv, undefined, { numeric: true }));
-    } catch (e) { state.offlineTree = []; }
-    render();
-    return;
-  }
-
-  try {
-    const res = await apiGet('getAllVisitedApartments');
-    let serverList = (res && res.data && Array.isArray(res.data.data)) ? res.data.data : [];
+  const treeHtml = filteredTree.map(item => {
+    const isExpanded = state.offlineKvExpanded && state.offlineKvExpanded[item.kv];
     
-    // Если сервер вернул старый формат (массив строк)
-    if (serverList.length > 0 && typeof serverList[0] === 'string') {
-      serverList = serverList.map(kv => ({ kv: kv, visits: [] }));
+    // Проверяем, все ли осмотры этой квартиры выбраны
+    const allKvSelected = item.visits.length > 0 && item.visits.every(v => state.offlineKvSelected[v.clientId]);
+    
+    let visitsHtml = '';
+    if (isExpanded) {
+      visitsHtml = item.visits.map(v => {
+        const isSelected = !!state.offlineKvSelected[v.clientId];
+        const isDownloaded = state.offlineDownloadedClientIds && state.offlineDownloadedClientIds.includes(v.clientId);
+        
+        let dateStr = '—';
+        try {
+          dateStr = new Date(v.date).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+        } catch(e) {}
+
+        let statusHtml = isDownloaded 
+          ? `<span style="color:#00A82D; font-size:11px; margin-left:8px; font-weight:600;">✓ Скачано</span>` 
+          : '';
+
+        return `
+          <div style="display:flex; align-items:center; padding:10px 12px; margin-left:20px; border-left:2px solid #E0E0E0; cursor:pointer;" onclick="event.stopPropagation(); toggleOfflineVisit('${escapeAttr(v.clientId)}')">
+            <div class="kv-checkbox" style="width:18px; height:18px; border-radius:4px; border:2px solid ${isSelected ? '#00A82D' : '#D0D0D0'}; background:${isSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0; font-size:12px;">
+              ${isSelected ? '✓' : ''}
+            </div>
+            <div style="flex:1; font-size:13px;">
+              <div style="font-weight:500;">Осмотр от ${dateStr}</div>
+              <div style="color:#7A7A7A; font-size:12px;">Осмотрщик: ${escapeHtml(v.email || '—')} ${statusHtml}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
     }
 
-    state.offlineTree = serverList;
-  } catch (e) {
-    console.warn('[offline] Ошибка загрузки с сервера:', e);
-    state.offlineTree = [];
-  }
-  render();
+    return `
+      <div style="margin-bottom:8px; background:#fff; border-radius:10px; border:1px solid #E0E0E0; overflow:hidden;">
+        <div style="display:flex; align-items:center; padding:12px; background:${allKvSelected ? '#E6F7EA' : '#FAFAFA'}; cursor:pointer;">
+          
+          <div class="kv-checkbox" style="width:24px; height:24px; border-radius:6px; border:2px solid ${allKvSelected ? '#00A82D' : '#D0D0D0'}; background:${allKvSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0;" onclick="event.stopPropagation(); toggleOfflineKv('${escapeAttr(item.kv)}')">
+            ${allKvSelected ? '✓' : ''}
+          </div>
+          
+          <div style="flex:1; font-size:15px; font-weight:600;" onclick="toggleKvExpand('${escapeAttr(item.kv)}')">
+            Квартира ${escapeHtml(item.kv)} <span style="font-size:12px; color:#888; font-weight:normal;">(${item.visits.length} осм.)</span>
+          </div>
+          
+          <div style="font-size:18px; color:#888; transform:rotate(${isExpanded ? '90deg' : '0deg'}); transition:transform 0.2s;" onclick="toggleKvExpand('${escapeAttr(item.kv)}')">›</div>
+        </div>
+        
+        ${isExpanded ? `<div style="padding:8px 0; background:#FAFAFA; border-top:1px solid #E0E0E0;">${visitsHtml}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  app.innerHTML = `
+    <div class="card">
+      <div class="step-header">
+        <h2>Скачать для офлайна</h2>
+        <p>Скачано осмотров: <b>${totalDownloaded}</b>.</p>
+        ${isOffline ? '<div style="color:#c5221f; font-size:13px; margin-top:5px;">📴 Вы офлайн. Показаны только скачанные данные.</div>' : ''}
+      </div>
+      
+      ${pendingHtml}
+
+      <div class="field-group">
+        <input class="field-input" type="text" placeholder="Поиск по номеру квартиры..." value="${escapeHtml(state.offlineSearch)}" oninput="onOfflineSearchInput(this.value)">
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <div style="font-size:13px; color:#7A7A7A;">Найдено квартир: ${filteredTree.length}</div>
+      </div>
+
+      <div style="max-height: 450px; overflow-y: auto; padding: 4px; margin-bottom: 16px;">
+        ${filteredTree.length === 0 ? '<div style="text-align:center; padding:20px; color:#9AA0A6;">Список пуст</div>' : treeHtml}
+      </div>
+
+      <button class="btn btn-primary btn-large" style="margin-bottom:10px;" id="downloadSelectedBtn" onclick="startSelectedOfflineDownload()" ${totalSelected === 0 ? 'disabled' : ''}>📥 Скачать выбранные (${totalSelected})</button>
+      <button class="btn btn-secondary" onclick="closeOfflineDownloadScreen()">← Назад</button>
+    </div>
+  `;
 }
 function closeOfflineDownloadScreen() {
   state.offlineDownloadScreen = false;
@@ -2451,6 +2503,8 @@ window.onOfflineSearchInput = onOfflineSearchInput;
 window.startSelectedOfflineDownload = startSelectedOfflineDownload;
 window.closeOfflineDownloadScreen = closeOfflineDownloadScreen;
 window.startSelectedOfflineDownload = startSelectedOfflineDownload;
+window.toggleKvExpand = toggleKvExpand;
+window.toggleOfflineVisit = toggleOfflineVisit;
 
 // ================= SVG-ИКОНКИ (стиль Evernote) =================
 function iconHome(size) {
