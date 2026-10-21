@@ -242,7 +242,9 @@ p {
 .main-action-card.purple {
   background: var(--purple);
 }
-
+.main-action-card.blue {
+  background: var(--blue);
+}
 .main-action-card .action-icon {
   display: flex;
   align-items: center;
