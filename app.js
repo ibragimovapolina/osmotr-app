@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.17';
+const APP_VERSION = '2.1.18';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -2317,7 +2317,6 @@ async function openOfflineDownloadScreen() {
 
 function renderOfflineDownloadScreen(app) {
   const search = state.offlineSearch.toLowerCase().trim();
-  
   const tree = state.offlineTree || [];
   const filteredTree = tree.filter(item => item.kv.toLowerCase().includes(search));
   
@@ -2335,9 +2334,9 @@ function renderOfflineDownloadScreen(app) {
   });
   if (!hasVisibleVisits) allVisibleSelected = false;
 
-  // Плашка прерванного скачивания
   let pendingHtml = '';
-  if (state.pendingDownloadState && state.pendingDownloadState.pending && state.pendingDownloadState.pending.length > 0) {
+  // Если есть прерванная загрузка и мы сейчас НЕ качаем
+  if (state.pendingDownloadState && state.pendingDownloadState.pending && state.pendingDownloadState.pending.length > 0 && !state.offlineDownloading) {
     pendingHtml = `
       <div class="card" style="background:#FFF3E0; border:2px solid #FF9800; margin-bottom:16px;">
         <h3 style="color:#E65100; margin-bottom:8px;">⏳ Прерванное скачивание</h3>
@@ -2350,7 +2349,6 @@ function renderOfflineDownloadScreen(app) {
 
   const treeHtml = filteredTree.map(item => {
     const isExpanded = state.offlineKvExpanded && state.offlineKvExpanded[item.kv];
-    
     const allKvSelected = item.visits.length > 0 && item.visits.every(v => state.offlineKvSelected[v.clientId]);
     
     let visitsHtml = '';
@@ -2383,7 +2381,7 @@ function renderOfflineDownloadScreen(app) {
     }
 
     return `
-      <div style="margin-bottom:8px; background:#fff; border-radius:10px; border:1px solid #E0E0E0; overflow:hidden;">
+      <div id="kv-block-${cssEscape(item.kv)}" style="margin-bottom:8px; background:#fff; border-radius:10px; border:1px solid #E0E0E0; overflow:hidden;">
         <div style="display:flex; align-items:center; padding:12px; background:${allKvSelected ? '#E6F7EA' : '#FAFAFA'}; cursor:pointer;">
           
           <div id="kv-checkbox-${cssEscape(item.kv)}" class="kv-checkbox" style="width:24px; height:24px; border-radius:6px; border:2px solid ${allKvSelected ? '#00A82D' : '#D0D0D0'}; background:${allKvSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0;" onclick="event.stopPropagation(); toggleOfflineKv('${escapeAttr(item.kv)}')">
@@ -2394,7 +2392,7 @@ function renderOfflineDownloadScreen(app) {
             Квартира ${escapeHtml(item.kv)} <span style="font-size:12px; color:#888; font-weight:normal;">(${item.visits.length} осм.)</span>
           </div>
           
-          <div style="font-size:18px; color:#888; transform:rotate(${isExpanded ? '90deg' : '0deg'}); transition:transform 0.2s;" onclick="toggleKvExpand('${escapeAttr(item.kv)}')">›</div>
+          <div id="kv-arrow-${cssEscape(item.kv)}" style="font-size:18px; color:#888; transform:rotate(${isExpanded ? '90deg' : '0deg'}); transition:transform 0.2s;" onclick="toggleKvExpand('${escapeAttr(item.kv)}')">›</div>
         </div>
         
         ${isExpanded ? `<div style="padding:8px 0; background:#FAFAFA; border-top:1px solid #E0E0E0;">${visitsHtml}</div>` : ''}
@@ -2403,7 +2401,6 @@ function renderOfflineDownloadScreen(app) {
   }).join('');
 
   app.innerHTML = `
-    <div id="inlineDownloadProgress"></div>
     <div class="card">
       <div class="step-header">
         <h2>Скачать для офлайна</h2>
@@ -2471,17 +2468,54 @@ function updateCheckboxUI() {
 
 function toggleKvExpand(kv) {
   state.offlineKvExpanded[kv] = !state.offlineKvExpanded[kv];
+  const isExpanded = state.offlineKvExpanded[kv];
   
-  // Вместо render() (который прыгает наверх), мы запоминаем позицию скролла
-  const app = document.getElementById('app');
-  const scrollPos = window.scrollY; 
-  
-  renderOfflineDownloadScreen(app);
-  
-  // И возвращаем скролл на место
-  window.scrollTo(0, scrollPos); 
-}
+  const arrow = document.getElementById(`kv-arrow-${cssEscape(kv)}`);
+  if (arrow) {
+    arrow.style.transform = isExpanded ? 'rotate(90deg)' : 'rotate(0deg)';
+  }
 
+  const block = document.getElementById(`kv-block-${cssEscape(kv)}`);
+  if (block) {
+    // Ищем блок с осмотрами (он идет следующим элементом после заголовка)
+    const header = block.querySelector('div[style*="padding:12px"]');
+    let visitsContainer = block.querySelector('div[style*="padding:8px 0"]');
+    
+    if (isExpanded && !visitsContainer) {
+      // Если раскрываем и контейнера нет — создаем его на лету
+      const item = state.offlineTree.find(x => x.kv === kv);
+      if (item) {
+        visitsContainer = document.createElement('div');
+        visitsContainer.style = 'padding:8px 0; background:#FAFAFA; border-top:1px solid #E0E0E0;';
+        
+        visitsContainer.innerHTML = item.visits.map(v => {
+          const isSelected = !!state.offlineKvSelected[v.clientId];
+          const isDownloaded = state.offlineDownloadedClientIds && state.offlineDownloadedClientIds.includes(v.clientId);
+          let dateStr = '—';
+          try { dateStr = new Date(v.date).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }); } catch(e) {}
+          const statusHtml = isDownloaded ? `<span style="color:#00A82D; font-size:11px; margin-left:8px; font-weight:600;">✓ Скачано</span>` : '';
+
+          return `
+            <div style="display:flex; align-items:center; padding:10px 12px; margin-left:20px; border-left:2px solid #E0E0E0; cursor:pointer;" onclick="event.stopPropagation(); toggleOfflineVisit('${escapeAttr(v.clientId)}')">
+              <div id="visit-checkbox-${v.clientId}" class="kv-checkbox" style="width:18px; height:18px; border-radius:4px; border:2px solid ${isSelected ? '#00A82D' : '#D0D0D0'}; background:${isSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0; font-size:12px;">
+                ${isSelected ? '✓' : ''}
+              </div>
+              <div style="flex:1; font-size:13px;">
+                <div style="font-weight:500;">Осмотр от ${dateStr}</div>
+                <div style="color:#7A7A7A; font-size:12px;">Осмотрщик: ${escapeHtml(v.email || '—')} ${statusHtml}</div>
+              </div>
+            </div>
+          `;
+        }).join('');
+        
+        block.appendChild(visitsContainer);
+      }
+    } else if (!isExpanded && visitsContainer) {
+      // Если скрываем — удаляем контейнер
+      visitsContainer.remove();
+    }
+  }
+}
 function toggleOfflineVisit(clientId) {
   if (state.offlineKvSelected[clientId]) delete state.offlineKvSelected[clientId];
   else state.offlineKvSelected[clientId] = true;
@@ -2565,29 +2599,33 @@ async function processOfflineDownloadQueue() {
   const dlState = await window.db.getMeta('offline_download_state');
   if (!dlState || !dlState.pending || !dlState.pending.length) {
     state.offlineDownloading = false;
-    const el = document.getElementById('inlineDownloadProgress');
-    if (el) el.innerHTML = '';
+    const el = document.getElementById('globalProgressToast');
+    if (el) el.remove();
     return;
   }
 
   let successCount = dlState.done.length;
   const total = dlState.total;
 
+  // Создаем или обновляем глобальную плашку поверх ВСЕГО приложения
+  let toast = document.getElementById('globalProgressToast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'globalProgressToast';
+    toast.style = 'position:fixed; top:10px; left:10px; right:10px; background:#2A2A2A; color:#fff; padding:16px; border-radius:12px; box-shadow:0 4px 12px rgba(0,0,0,0.4); z-index:10000; display:flex; flex-direction:column;';
+    document.body.appendChild(toast);
+  }
+
   const updateProgressUI = (text, percent, photoText) => {
-    const el = document.getElementById('inlineDownloadProgress');
-    if (!el) return;
-    
-    el.innerHTML = `
-      <div class="card" style="background:#2A2A2A; color:#fff; padding:16px; margin-bottom:16px; border-radius:12px;">
-        <div style="font-size:14px; font-weight:600; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
-          <div class="photo-spinner" style="width:16px; height:16px; border-width:2px; margin:0;"></div>
-          ${text}
-        </div>
-        <div style="width:100%; height:8px; background:#444; border-radius:4px; overflow:hidden; margin-bottom:8px;">
-          <div style="width:${percent}%; height:100%; background:#00A82D; transition:width 0.3s ease;"></div>
-        </div>
-        <div style="font-size:12px; color:#CCC; text-align:right;">${photoText}</div>
+    toast.innerHTML = `
+      <div style="font-size:14px; font-weight:600; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+        <div class="photo-spinner" style="width:16px; height:16px; border-width:2px; margin:0;"></div>
+        ${text}
       </div>
+      <div style="width:100%; height:8px; background:#444; border-radius:4px; overflow:hidden; margin-bottom:8px;">
+        <div style="width:${percent}%; height:100%; background:#00A82D; transition:width 0.3s ease;"></div>
+      </div>
+      <div style="font-size:12px; color:#CCC; text-align:right;">${photoText}</div>
     `;
   };
 
@@ -2596,7 +2634,7 @@ async function processOfflineDownloadQueue() {
     const currentIndex = successCount + 1;
     const percent = Math.round((successCount / total) * 100);
 
-    updateProgressUI(`Скачиваем осмотр (${currentIndex} из ${total})...`, percent, 'Подготовка фото...');
+    updateProgressUI(`Скачиваем (${currentIndex} из ${total})...`, percent, 'Подготовка фото...');
 
     try {
       const visitRes = await apiGet('getVisitById', { clientId: clientId });
@@ -2617,7 +2655,7 @@ async function processOfflineDownloadQueue() {
         await downloadVisitPhotos(visitData, (count) => {
           downloadedPhotos += count;
           updateProgressUI(
-            `Скачиваем осмотр (${currentIndex} из ${total})...`, 
+            `Скачиваем (${currentIndex} из ${total})...`, 
             percent, 
             `Фото: ${downloadedPhotos} из ${totalPhotos}`
           );
@@ -2643,9 +2681,12 @@ async function processOfflineDownloadQueue() {
       }
       state.offlineDownloadedMap = await window.db.getAllOfflineVisitsInfo();
       
-      const totalDownloaded = (state.offlineDownloadedClientIds || []).length;
-      const countEl = document.querySelector('.step-header p b');
-      if (countEl) countEl.textContent = totalDownloaded;
+      // Если мы сейчас на экране скачивания — обновим счетчик и чекбоксы без render()
+      if (state.offlineDownloadScreen) {
+        const countEl = document.querySelector('.step-header p b');
+        if (countEl) countEl.textContent = state.offlineDownloadedClientIds.length;
+        updateCheckboxUI();
+      }
 
     } catch (err) {
       console.warn('[offline download] Ошибка с ID', clientId, err.message);
@@ -2658,14 +2699,10 @@ async function processOfflineDownloadQueue() {
   state.pendingDownloadState = null;
   state.offlineDownloading = false;
 
-  const el = document.getElementById('inlineDownloadProgress');
-  if (el) {
-    el.innerHTML = `
-      <div class="card" style="background:#E6F7EA; border:2px solid #00A82D; color:#00A82D; padding:16px; margin-bottom:16px; border-radius:12px; text-align:center; font-weight:600;">
-        ✅ Готово! Скачано осмотров: ${successCount}
-      </div>
-    `;
-    setTimeout(() => { el.innerHTML = ''; }, 5000);
+  if (toast) {
+    toast.style.background = '#00A82D';
+    toast.innerHTML = `<div style="text-align:center; font-weight:600;">✅ Готово! Скачано: ${successCount} осм.</div>`;
+    setTimeout(() => { toast.remove(); }, 3000);
   }
 }
 
