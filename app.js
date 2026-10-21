@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.14';
+const APP_VERSION = '2.1.16';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -2314,7 +2314,102 @@ async function openOfflineDownloadScreen() {
   }
   render();
 }
+function updateCheckboxUI() {
+  const totalSelected = Object.keys(state.offlineKvSelected).length;
+  const btn = document.getElementById('downloadSelectedBtn');
+  
+  if (btn) {
+    btn.textContent = `📥 Скачать выбранные (${totalSelected})`;
+    btn.disabled = totalSelected === 0;
+  }
 
+  const allItems = state.offlineTree || [];
+  allItems.forEach(item => {
+    const allKvSelected = item.visits.length > 0 && item.visits.every(v => state.offlineKvSelected[v.clientId]);
+    
+    const kvCheckbox = document.getElementById(`kv-checkbox-${cssEscape(item.kv)}`);
+    if (kvCheckbox) {
+      kvCheckbox.style.borderColor = allKvSelected ? '#00A82D' : '#D0D0D0';
+      kvCheckbox.style.background = allKvSelected ? '#00A82D' : '#fff';
+      kvCheckbox.innerHTML = allKvSelected ? '✓' : '';
+      
+      const headerDiv = kvCheckbox.closest('div[style*="background"]');
+      if (headerDiv) {
+        headerDiv.style.background = allKvSelected ? '#E6F7EA' : '#FAFAFA';
+      }
+    }
+
+    item.visits.forEach(v => {
+      const visitCheckbox = document.getElementById(`visit-checkbox-${v.clientId}`);
+      if (visitCheckbox) {
+        const isSelected = !!state.offlineKvSelected[v.clientId];
+        visitCheckbox.style.borderColor = isSelected ? '#00A82D' : '#D0D0D0';
+        visitCheckbox.style.background = isSelected ? '#00A82D' : '#fff';
+        visitCheckbox.innerHTML = isSelected ? '✓' : '';
+      }
+    });
+  });
+}
+
+function toggleKvExpand(kv) {
+  state.offlineKvExpanded[kv] = !state.offlineKvExpanded[kv];
+  const app = document.getElementById('app');
+  const scrollPos = window.scrollY; 
+  renderOfflineDownloadScreen(app);
+  window.scrollTo(0, scrollPos); 
+}
+
+function toggleOfflineVisit(clientId) {
+  if (state.offlineKvSelected[clientId]) delete state.offlineKvSelected[clientId];
+  else state.offlineKvSelected[clientId] = true;
+  updateCheckboxUI();
+}
+
+function toggleOfflineKv(kv) {
+  const item = state.offlineTree.find(x => x.kv === kv);
+  if (!item) return;
+  
+  const allSelected = item.visits.length > 0 && item.visits.every(v => state.offlineKvSelected[v.clientId]);
+  
+  if (allSelected) {
+    item.visits.forEach(v => delete state.offlineKvSelected[v.clientId]);
+  } else {
+    item.visits.forEach(v => state.offlineKvSelected[v.clientId] = true);
+  }
+  
+  updateCheckboxUI();
+}
+
+function toggleOfflineSelectAll() {
+  if (state.offlineDownloading) return;
+  
+  const search = state.offlineSearch.toLowerCase().trim();
+  const visibleItems = state.offlineTree.filter(item => item.kv.toLowerCase().includes(search));
+  
+  let allSelected = true;
+  let hasVisits = false;
+  
+  visibleItems.forEach(item => {
+    item.visits.forEach(v => {
+      hasVisits = true;
+      if (!state.offlineKvSelected[v.clientId]) allSelected = false;
+    });
+  });
+
+  if (!hasVisits) return;
+
+  if (allSelected) {
+    visibleItems.forEach(item => {
+      item.visits.forEach(v => delete state.offlineKvSelected[v.clientId]);
+    });
+  } else {
+    visibleItems.forEach(item => {
+      item.visits.forEach(v => state.offlineKvSelected[v.clientId] = true);
+    });
+  }
+  
+  updateCheckboxUI();
+}
 function renderOfflineDownloadScreen(app) {
   const search = state.offlineSearch.toLowerCase().trim();
   
@@ -2370,7 +2465,7 @@ function renderOfflineDownloadScreen(app) {
 
         return `
           <div style="display:flex; align-items:center; padding:10px 12px; margin-left:20px; border-left:2px solid #E0E0E0; cursor:pointer;" onclick="event.stopPropagation(); toggleOfflineVisit('${escapeAttr(v.clientId)}')">
-            <div class="kv-checkbox" style="width:18px; height:18px; border-radius:4px; border:2px solid ${isSelected ? '#00A82D' : '#D0D0D0'}; background:${isSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0; font-size:12px;">
+            <div id="visit-checkbox-${v.clientId}" class="kv-checkbox" style="width:18px; height:18px; border-radius:4px; border:2px solid ${isSelected ? '#00A82D' : '#D0D0D0'}; background:${isSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0; font-size:12px;">
               ${isSelected ? '✓' : ''}
             </div>
             <div style="flex:1; font-size:13px;">
@@ -2386,7 +2481,7 @@ function renderOfflineDownloadScreen(app) {
       <div style="margin-bottom:8px; background:#fff; border-radius:10px; border:1px solid #E0E0E0; overflow:hidden;">
         <div style="display:flex; align-items:center; padding:12px; background:${allKvSelected ? '#E6F7EA' : '#FAFAFA'}; cursor:pointer;">
           
-          <div class="kv-checkbox" style="width:24px; height:24px; border-radius:6px; border:2px solid ${allKvSelected ? '#00A82D' : '#D0D0D0'}; background:${allKvSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0;" onclick="event.stopPropagation(); toggleOfflineKv('${escapeAttr(item.kv)}')">
+           <div id="kv-checkbox-${cssEscape(item.kv)}" class="kv-checkbox" style="width:24px; height:24px; border-radius:6px; border:2px solid ${allKvSelected ? '#00A82D' : '#D0D0D0'}; background:${allKvSelected ? '#00A82D' : '#fff'}; display:flex; align-items:center; justify-content:center; color:#fff; margin-right:12px; flex-shrink:0;" onclick="event.stopPropagation(); toggleOfflineKv('${escapeAttr(item.kv)}')">
             ${allKvSelected ? '✓' : ''}
           </div>
           
@@ -2403,13 +2498,14 @@ function renderOfflineDownloadScreen(app) {
   }).join('');
 
   app.innerHTML = `
+    <div id="inlineDownloadProgress"></div>
     <div class="card">
       <div class="step-header">
         <h2>Скачать для офлайна</h2>
         <p>Скачано осмотров: <b>${totalDownloaded}</b>.</p>
         ${isOffline ? '<div style="color:#c5221f; font-size:13px; margin-top:5px;">📴 Вы офлайн. Показаны только скачанные данные.</div>' : ''}
       </div>
-      
+   
       ${pendingHtml}
 
       <div class="field-group">
@@ -2438,44 +2534,12 @@ function closeOfflineDownloadScreen() {
   render();
 }
 
-function toggleOfflineSelectAll() {
-  if (state.offlineDownloading) return;
-  
-  const search = state.offlineSearch.toLowerCase().trim();
-  const visibleItems = state.offlineTree.filter(item => item.kv.toLowerCase().includes(search));
-  
-  let allSelected = true;
-  let hasVisits = false;
-  
-  visibleItems.forEach(item => {
-    item.visits.forEach(v => {
-      hasVisits = true;
-      if (!state.offlineKvSelected[v.clientId]) allSelected = false;
-    });
-  });
-
-  if (!hasVisits) return;
-
-  if (allSelected) {
-    visibleItems.forEach(item => {
-      item.visits.forEach(v => delete state.offlineKvSelected[v.clientId]);
-    });
-  } else {
-    visibleItems.forEach(item => {
-      item.visits.forEach(v => state.offlineKvSelected[v.clientId] = true);
-    });
-  }
-  render();
-}
 
 function onOfflineSearchInput(value) { 
   state.offlineSearch = value; 
   render(); 
 }
 
-function toggleOfflineKv(kv) {
-  const item = state.offlineTree.find(x => x.kv === kv);
-  if (!item) return;
   
   const allSelected = item.visits.length > 0 && item.visits.every(v => state.offlineKvSelected[v.clientId]);
   
@@ -2485,17 +2549,6 @@ function toggleOfflineKv(kv) {
     item.visits.forEach(v => state.offlineKvSelected[v.clientId] = true);
   }
   render();
-}
-
-function toggleKvExpand(kv) {
-  state.offlineKvExpanded[kv] = !state.offlineKvExpanded[kv];
-  render();
-}
-
-function toggleOfflineVisit(clientId) {
-  if (state.offlineKvSelected[clientId]) delete state.offlineKvSelected[clientId];
-  else state.offlineKvSelected[clientId] = true;
-  render(); 
 }
 
 async function startSelectedOfflineDownload() {
@@ -2523,35 +2576,67 @@ async function processOfflineDownloadQueue() {
   const dlState = await window.db.getMeta('offline_download_state');
   if (!dlState || !dlState.pending || !dlState.pending.length) {
     state.offlineDownloading = false;
+    const el = document.getElementById('inlineDownloadProgress');
+    if (el) el.innerHTML = '';
     return;
-  }
-
-  let progressEl = document.getElementById('floatingProgress');
-  if (!progressEl) {
-    progressEl = document.createElement('div');
-    progressEl.id = 'floatingProgress';
-    progressEl.style = 'position:fixed; top:20px; left:50%; transform:translateX(-50%); background:#333; color:#fff; padding:12px 20px; border-radius:30px; box-shadow:0 4px 12px rgba(0,0,0,0.3); z-index:9999; font-size:14px; display:flex; align-items:center; gap:10px; min-width:250px;';
-    document.body.appendChild(progressEl);
   }
 
   let successCount = dlState.done.length;
   const total = dlState.total;
 
+  // Функция для обновления плашки на экране
+  const updateProgressUI = (text, percent, photoText) => {
+    const el = document.getElementById('inlineDownloadProgress');
+    if (!el) return;
+    
+    // Если мы ушли с экрана скачивания, ничего не делаем
+    el.innerHTML = `
+      <div class="card" style="background:#2A2A2A; color:#fff; padding:16px; margin-bottom:16px; border-radius:12px;">
+        <div style="font-size:14px; font-weight:600; margin-bottom:8px; display:flex; align-items:center; gap:8px;">
+          <div class="photo-spinner" style="width:16px; height:16px; border-width:2px; margin:0;"></div>
+          ${text}
+        </div>
+        <div style="width:100%; height:8px; background:#444; border-radius:4px; overflow:hidden; margin-bottom:8px;">
+          <div style="width:${percent}%; height:100%; background:#00A82D; transition:width 0.3s ease;"></div>
+        </div>
+        <div style="font-size:12px; color:#CCC; text-align:right;">${photoText}</div>
+      </div>
+    `;
+  };
+
   while (dlState.pending.length > 0) {
     const clientId = dlState.pending[0];
     const currentIndex = successCount + 1;
+    const percent = Math.round((successCount / total) * 100);
 
-    progressEl.innerHTML = `
-      <div class="photo-spinner" style="width:16px; height:16px; border-width:2px; margin:0;"></div>
-      <span>Скачиваем осмотр (${currentIndex} из ${total})...</span>
-    `;
+    updateProgressUI(`Скачиваем осмотр (${currentIndex} из ${total})...`, percent, 'Подготовка фото...');
 
     try {
       const visitRes = await apiGet('getVisitById', { clientId: clientId });
       const visitData = (visitRes && visitRes.data) ? visitRes.data : visitRes;
       
       if (visitData && visitData.found) {
-        await downloadVisitPhotos(visitData, (count) => {});
+        // Считаем общее количество фото для этого осмотра
+        let totalPhotos = 0;
+        Object.keys(visitData.payload.results || {}).forEach(sk => {
+          totalPhotos += (visitData.payload.results[sk].commonPhotos || []).length;
+          Object.keys(visitData.payload.results[sk].photosByVariant || {}).forEach(v => {
+            totalPhotos += (visitData.payload.results[sk].photosByVariant[v] || []).length;
+          });
+        });
+        totalPhotos += (visitData.payload.extraPhotos || []).length;
+
+        let downloadedPhotos = 0;
+        
+        // Передаем колбэк, который будет обновлять счетчик фото
+        await downloadVisitPhotos(visitData, (count) => {
+          downloadedPhotos += count;
+          updateProgressUI(
+            `Скачиваем осмотр (${currentIndex} из ${total})...`, 
+            percent, 
+            `Фото: ${downloadedPhotos} из ${totalPhotos}`
+          );
+        });
         
         await window.db.saveOfflineVisit({
           clientId: visitData.clientId,
@@ -2573,7 +2658,11 @@ async function processOfflineDownloadQueue() {
         state.offlineDownloadedClientIds.push(clientId);
       }
       state.offlineDownloadedMap = await window.db.getAllOfflineVisitsInfo();
-      render();
+      
+      // Чтобы не дергать весь интерфейс, обновляем только плашку и счетчик скачанных
+      const totalDownloaded = (state.offlineDownloadedClientIds || []).length;
+      const countEl = document.querySelector('.step-header p b');
+      if (countEl) countEl.textContent = totalDownloaded;
 
     } catch (err) {
       console.warn('[offline download] Ошибка с ID', clientId, err.message);
@@ -2586,13 +2675,17 @@ async function processOfflineDownloadQueue() {
   state.pendingDownloadState = null;
   state.offlineDownloading = false;
 
-  if (progressEl) {
-    progressEl.style.background = '#00A82D';
-    progressEl.innerHTML = `<span>✅ Готово! Скачано: ${successCount} осм.</span>`;
-    setTimeout(() => { progressEl.remove(); }, 3000);
+  // Финальный экран об успехе
+  const el = document.getElementById('inlineDownloadProgress');
+  if (el) {
+    el.innerHTML = `
+      <div class="card" style="background:#E6F7EA; border:2px solid #00A82D; color:#00A82D; padding:16px; margin-bottom:16px; border-radius:12px; text-align:center; font-weight:600;">
+        ✅ Готово! Скачано осмотров: ${successCount}
+      </div>
+    `;
+    setTimeout(() => { el.innerHTML = ''; }, 5000); // Прячем через 5 сек
   }
 }
-
 async function resumeOfflineDownload() {
   state.offlineDownloading = true;
   await processOfflineDownloadQueue();
