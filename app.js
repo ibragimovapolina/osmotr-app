@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.19';
+const APP_VERSION = '2.1.20';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -380,21 +380,36 @@ function renderHome(app) {
     ${renderSwUpdateBanner()}
     <div class="welcome-header"><div class="welcome-greeting">Привет, ${escapeHtml(firstName)} 👋</div><div class="welcome-date">${escapeHtml(dateCapitalized)}</div></div>
     ${renderStatusLine()}
+    
     <div class="main-actions">
-      <button class="main-action-card green" onclick="startNewVisit()"><div class="action-icon">${iconHome(28)}</div><div class="action-info"><div class="action-title">Новый осмотр</div></div></button>
-      <button class="main-action-card purple" onclick="showVisits()"><div class="action-icon">${iconList(28)}</div><div class="action-info"><div class="action-title">Мои осмотры</div></div></button>
+      <button class="main-action-card green" onclick="startNewVisit()">
+        <div class="action-icon">${iconHome(28)}</div>
+        <div class="action-info"><div class="action-title">Новый осмотр</div></div>
+      </button>
+      <button class="main-action-card purple" onclick="showVisits()">
+        <div class="action-icon">${iconList(28)}</div>
+        <div class="action-info"><div class="action-title">Мои осмотры</div></div>
+      </button>
+      <!-- НОВАЯ КНОПКА СКАЧИВАНИЯ -->
+      <button class="main-action-card blue" onclick="openOfflineDownloadScreen()">
+        <div class="action-icon">${iconDownload(28)}</div>
+        <div class="action-info"><div class="action-title">Скачать офлайн</div></div>
+      </button>
     </div>
+
     ${hasDraft ? `
     <button class="list-row" onclick="continueDraft()">
       <div class="list-row-icon yellow">${iconPencil(22)}</div>
       <div class="list-row-content"><div class="list-row-title">Продолжить черновик</div><div class="list-row-subtitle">Квартира ${escapeHtml(state.pendingDraft.form.kvNumber || '—')}</div></div>
       <div class="list-row-arrow">${iconChevronRight(20)}</div>
     </button>` : ''}
+    
     <button class="list-row" onclick="showQueue()">
       <div class="list-row-icon ${pending > 0 ? 'blue' : 'green'}">${pending > 0 ? iconArrowUpCircle(22) : iconCheckCircle(22)}</div>
       <div class="list-row-content"><div class="list-row-title">Очередь отправки</div><div class="list-row-subtitle">${pending > 0 ? pending + ' ' + pluralVisits(pending) + ' ждёт отправки' : 'Всё отправлено'}</div></div>
       <div class="list-row-arrow">${iconChevronRight(20)}</div>
     </button>
+    
     <button class="list-row" onclick="showSettings()">
       <div class="list-row-icon blue">${iconGear(22)}</div>
       <div class="list-row-content"><div class="list-row-title">Настройки</div><div class="list-row-subtitle">Профиль, данные, диагностика</div></div>
@@ -402,7 +417,6 @@ function renderHome(app) {
     </button>
   `;
 }
-
 function pluralVisits(n) {
   const mod10 = n % 10;
   const mod100 = n % 100;
@@ -452,59 +466,83 @@ async function showSettings() {
 }
 
 async function renderSettings(app) {
-  let refCount = 0, photoQueue = 0;
+  let refCount = 0;
   try {
     const ref = await window.db.getReference();
     refCount = ref ? Object.keys(ref).length : 0;
   } catch (e) {}
-  try {
-    const allPhotos = await window.db.getAllPhotos();
-    photoQueue = allPhotos.filter(p => p.status !== 'uploaded').length;
-  } catch (e) {}
   const version = await window.db.getMeta('version');
-  const msgHtml = state.settingsMessage ? `<div class="update-info ${state.settingsMessage.type === 'error' ? 'error' : (state.settingsMessage.type === 'ok' ? 'ok' : '')}">${escapeHtml(state.settingsMessage.text)}</div>` : '';
+  
+  // Состояние для раскрытых блоков настроек
+  if (!state.settingsExpanded) state.settingsExpanded = { profile: true, data: false, diagnostic: false };
+  const exp = state.settingsExpanded;
 
   app.innerHTML = `
     ${renderSwUpdateBanner()}
-    <div class="card">
-      <div class="step-header"><h2>⚙ Настройки</h2></div>
-      ${msgHtml}
-      <div class="settings-section">
-        <h3>Профиль</h3>
-        <div class="settings-item"><span class="settings-item-label">👤 Имя осмотрщика</span><span class="settings-item-value">${escapeHtml(state.user.name || '—')}</span></div>
+    
+    <!-- ПРОФИЛЬ -->
+    <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 12px;">
+      <div style="padding: 16px; display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleSettingsBlock('profile')">
+        <h3 style="margin: 0; font-size: 16px;">👤 Профиль</h3>
+        <div style="transform: rotate(${exp.profile ? '90deg' : '0deg'}); transition: 0.2s;">›</div>
+      </div>
+      ${exp.profile ? `
+      <div style="padding: 0 16px 16px 16px; border-top: 1px solid #f0f0f0;">
+        <div class="settings-item" style="margin-top: 12px;"><span class="settings-item-label">Имя осмотрщика</span><span class="settings-item-value">${escapeHtml(state.user.name || '—')}</span></div>
         <button class="btn btn-secondary" style="margin-top:12px;" onclick="openNameChange()">Сменить имя</button>
       </div>
-      <div class="settings-section">
-        <h3>Данные</h3>
-        <div class="settings-item"><span class="settings-item-label">📚 Справочник квартир</span><span class="settings-item-value">${refCount} шт.</span></div>
-        <div class="settings-item"><span class="settings-item-label">📋 Осмотров всего</span><span class="settings-item-value">${state.queueStats.totalVisits || 0}</span></div>
-        <div class="settings-item"><span class="settings-item-label">📤 В очереди</span><span class="settings-item-value">${state.queueStats.pendingVisits || 0}</span></div>
-        <div class="settings-item"><span class="settings-item-label">📷 Фото в очереди</span><span class="settings-item-value">${photoQueue}</span></div>
-        <button class="btn btn-primary" style="margin-top:12px;" onclick="updateReferenceNow()">🔄 Обновить справочник</button>
-        <button class="btn btn-primary" style="margin-top:12px;" onclick="openOfflineDownloadScreen()">📥 Скачать осмотры для офлайна</button>
+      ` : ''}
+    </div>
+
+    <!-- ДАННЫЕ -->
+    <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 12px;">
+      <div style="padding: 16px; display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleSettingsBlock('data')">
+        <h3 style="margin: 0; font-size: 16px;">📥 Данные</h3>
+        <div style="transform: rotate(${exp.data ? '90deg' : '0deg'}); transition: 0.2s;">›</div>
+      </div>
+      ${exp.data ? `
+      <div style="padding: 0 16px 16px 16px; border-top: 1px solid #f0f0f0;">
+        <div class="settings-item" style="margin-top: 12px;"><span class="settings-item-label">📚 Справочник квартир</span><span class="settings-item-value">${refCount} шт.</span></div>
+        
+        <button class="btn btn-primary" style="margin-top:16px;" onclick="updateReferenceNow()">🔄 Обновить справочник</button>
         <button class="btn btn-secondary" style="margin-top:8px;" onclick="exportVisitsCsvFromSettings()">📥 Скачать осмотры (CSV)</button>
-        <hr style="margin:16px 0;border:none;border-top:1px solid #e0e0e0;">
+        
+        <hr style="margin:16px 0; border:none; border-top:1px solid #f0f0f0;">
+        
         <p style="font-size:13px;color:#5f6368;margin-bottom:8px;">Если осмотры долго не отправляются из очереди — нажмите сюда. Копия уйдёт в облако.</p>
         <button class="btn btn-primary" id="queueBackupBtn" onclick="uploadQueueToDrive()" ${state.queueStats.pendingVisits === 0 ? 'disabled' : ''}>📤 Не отправляется? Нажмите сюда</button>
-        <div style="font-size:12px;color:#5f6368;margin-top:6px;">Копия уйдёт в облако</div>
         ${state.queueBackupMsg ? `<div class="update-info ${state.queueBackupMsg.type === 'error' ? 'error' : 'ok'}" style="margin-top:8px;">${escapeHtml(state.queueBackupMsg.text)}</div>` : ''}
         ${renderQueueBackupStatus()}
       </div>
-      <div class="settings-section">
-        <h3>Обновление приложения</h3>
-        <p style="font-size:14px;color:#5f6368;margin-bottom:12px;">Проверьте, нет ли новой версии.</p>
-        <button class="btn btn-primary" onclick="checkAndUpdateApp()">🔄 Проверить обновление</button>
+      ` : ''}
+    </div>
+
+    <!-- ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ -->
+    <div class="card" style="margin-bottom: 12px;">
+      <h3 style="margin: 0 0 12px 0; font-size: 16px;">🔄 Обновление приложения</h3>
+      <p style="font-size:13px;color:#5f6368;margin-bottom:12px;">Проверьте, нет ли новой версии.</p>
+      <button class="btn btn-secondary" onclick="checkAndUpdateApp()">Проверить обновление</button>
+      ${state.settingsMessage ? `<div class="update-info ${state.settingsMessage.type === 'error' ? 'error' : (state.settingsMessage.type === 'ok' ? 'ok' : '')}" style="margin-top:12px;">${escapeHtml(state.settingsMessage.text)}</div>` : ''}
+    </div>
+
+    <!-- ДИАГНОСТИКА -->
+    <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 12px;">
+      <div style="padding: 16px; display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleSettingsBlock('diagnostic')">
+        <h3 style="margin: 0; font-size: 16px;">🛠 Диагностика</h3>
+        <div style="transform: rotate(${exp.diagnostic ? '90deg' : '0deg'}); transition: 0.2s;">›</div>
       </div>
-      <div class="settings-section">
-        <h3>Диагностика</h3>
-        <div class="settings-item"><span class="settings-item-label">Версия приложения</span><span class="settings-item-value">${APP_VERSION}</span></div>
+      ${exp.diagnostic ? `
+      <div style="padding: 0 16px 16px 16px; border-top: 1px solid #f0f0f0;">
+        <div class="settings-item" style="margin-top: 12px;"><span class="settings-item-label">Версия приложения</span><span class="settings-item-value">${APP_VERSION}</span></div>
         <div class="settings-item"><span class="settings-item-label">Версия данных</span><span class="settings-item-value">${version ? (version.reference || '0') : '—'}</span></div>
         <button class="btn btn-primary" style="margin-top:12px;" onclick="forcePingCheck()">📡 Проверить API сейчас</button>
         <button class="btn btn-secondary" style="margin-top:8px;" onclick="showDiagnostics()">🔍 Диагностика</button>
       </div>
-      <button class="btn btn-secondary" onclick="goHome()">← На главную</button>
-      <div class="app-version">Осмотры квартир · v${APP_VERSION}<br>Работает офлайн</div>
+      ` : ''}
     </div>
+
+    <button class="btn btn-secondary" onclick="goHome()" style="margin-top: 12px;">← На главную</button>
+    <div class="app-version" style="margin-top: 24px;">Осмотры квартир · v${APP_VERSION}<br>Работает офлайн</div>
   `;
 }
 
@@ -2810,4 +2848,8 @@ function iconRuler(size) {
 function iconCamera(size) {
   const s = size || 24;
   return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>`;
+}
+function iconDownload(size) {
+  const s = size || 24;
+  return `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`;
 }
