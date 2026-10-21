@@ -225,12 +225,10 @@ async function syncVisit(visit) {
     progress: { stage: 'photos', current: 0, total: 0 }
   });
 
-  // ДАЕМ БАЗЕ 1 СЕКУНДУ, ЧТОБЫ ФОНОВЫЕ ЗАПИСИ ФОТО ЗАВЕРШИЛИСЬ
   await new Promise(r => setTimeout(r, 1000)); 
 
   let photosUploaded = 0;
   
-  // Собираем все фото из базы для этого осмотра
   const allDbPhotos = await window.db.getPhotosForVisit(visit.clientId);
   const dbPhotosMap = {};
   allDbPhotos.forEach(p => {
@@ -244,7 +242,6 @@ async function syncVisit(visit) {
       let dbPhoto = null;
       if (p.photoId) dbPhoto = dbPhotosMap[p.photoId];
       else if (p.name) dbPhoto = dbPhotosMap[p.name];
-      
       if (dbPhoto) photosToUpload.push(dbPhoto);
     });
   };
@@ -257,7 +254,6 @@ async function syncVisit(visit) {
   });
   collectPhotos(visit.payload.extraPhotos);
 
-  // Убираем дубликаты
   const uniquePhotos = [];
   const seen = new Set();
   photosToUpload.forEach(p => {
@@ -315,7 +311,7 @@ async function syncVisit(visit) {
 
   const payload = buildPayloadWithPhotos(visit.payload, photoMap);
   payload.clientId = visit.clientId;
-  payload.sourceVisitId = visit.payload.sourceVisitId || null; 
+  payload.sourceVisitId = visit.payload.sourceVisitId || null;
 
   await window.db.updateVisit(visit.clientId, {
     progress: { stage: 'submit', current: 0, total: 0 }
@@ -329,9 +325,9 @@ async function syncVisit(visit) {
     throw new Error('Сервер вернул ошибку: ' + ((data && data.error) || 'неизвестно'));
   }
 
-    await sleep(500);
+  await sleep(500);
   
-  // Если сервер вернул новый ClientID (при дополнении), используем его
+  // Берем новый ID, который сгенерировал сервер (rev_...)
   let finalClientId = visit.clientId;
   if (data && data.clientId) {
     finalClientId = data.clientId;
@@ -349,6 +345,8 @@ async function syncVisit(visit) {
     }
   }
 
+  // ВАЖНО: Обновляем локальный ID визита на тот, что вернул сервер, 
+  // чтобы повторная отправка не создала дубль!
   await window.db.updateVisit(visit.clientId, {
     status: 'synced',
     syncedAt: new Date().toISOString(),
@@ -356,21 +354,12 @@ async function syncVisit(visit) {
     progress: null
   });
 
-  await window.db.updateVisit(visit.clientId, {
-    status: 'synced',
-    syncedAt: new Date().toISOString(),
-    serverRow: (data && data.row) || null,
-    progress: null
-  });
-
-  // Удаляем фото из базы только после успешной отправки
   for (const p of photosToUpload) {
     await window.db.deletePhoto(p.photoId);
   }
 
   return { photosUploaded };
 }
-
 function pushPhotoToMap(map, stateKey, remote, variantKey) {
   if (!map[stateKey]) map[stateKey] = { common: [], byVariant: {} };
   const entry = { fileId: remote.fileId, url: remote.url, name: remote.name };
