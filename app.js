@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
-const API_URL = 'https://verdant-nasturtium-c02297.netlify.app/api';
-const APP_VERSION = '2.1.22';
+const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
+const APP_VERSION = '2.1.23';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
