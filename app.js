@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.23';
+const APP_VERSION = '2.1.24';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -144,6 +144,12 @@ function hardReload() {
 async function continueStartup() {
   if (window.db && window.db.resetStuckSyncing) window.db.resetStuckSyncing(3).catch(() => {});
   setTimeout(() => { maybeAutoBackupQueue().catch(() => {}); }, 5000);
+    // НОВЫЙ БЛОК: Очистка старых офлайн-осмотров при старте (выполняется 1 раз)
+  if (window.db && window.db.clearAllOfflineVisits) {
+    window.db.clearAllOfflineVisits().catch(() => {});
+  }
+
+  const draft = await checkDraftOnStart();
   const draft = await checkDraftOnStart();
   state.pendingDraft = draft;
   state.screen = 'home';
@@ -390,11 +396,7 @@ function renderHome(app) {
         <div class="action-icon">${iconList(28)}</div>
         <div class="action-info"><div class="action-title">Мои осмотры</div></div>
       </button>
-      <!-- НОВАЯ КНОПКА СКАЧИВАНИЯ -->
-      <button class="main-action-card blue" onclick="openOfflineDownloadScreen()">
-        <div class="action-icon">${iconDownload(28)}</div>
-        <div class="action-info"><div class="action-title">Скачать офлайн</div></div>
-      </button>
+      
     </div>
 
     ${hasDraft ? `
@@ -960,13 +962,8 @@ function onKvInput(value) {
       if (data && data.found) {
         state.form.apartment = data.data;
         
-        try {
-          await loadExistingVisitsList(kv); 
-        } catch (e) {
-          console.warn('Не удалось загрузить прошлые осмотры:', e);
-          state.existingVisits = [];
-        }
-        
+                // Загрузка прошлых осмотров отключена
+        state.existingVisits = [];
         renderKvResultBlock();
         
         if (btn) btn.disabled = false;
@@ -1016,25 +1013,6 @@ function renderKvResultBlock() {
       </div>
     </div>
   `;
-  if (state.existingVisits && state.existingVisits.length > 0) {
-    html += `<div class="existing-visits-block">
-      <div class="existing-visits-title">📋 Эта квартира уже осматривалась</div>
-      <div class="existing-visits-hint">Выберите осмотр, чтобы загрузить данные для дополнения:</div>`;
-    state.existingVisits.forEach((v, i) => {
-      const dt = v.visitedAt ? new Date(v.visitedAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
-      const isSelected = state.selectedVisitId === v.clientId;
-      html += `
-        <button class="existing-visit-item ${isSelected ? 'selected' : ''}" onclick="selectExistingVisit('${escapeAttr(v.clientId)}')" ${state.loadingExisting ? 'disabled' : ''}>
-          <div class="existing-visit-info">
-            <div class="existing-visit-date">${escapeHtml(dt)}</div>
-            <div class="existing-visit-email">${escapeHtml(v.email || '—')}</div>
-          </div>
-          ${isSelected ? `<div class="existing-visit-check">${state.loadingExisting ? '⏳' : '✓'}</div>` : `<div class="existing-visit-arrow">›</div>`}
-        </button>
-      `;
-    });
-    html += `<div class="existing-visits-note">ⓘ Новый осмотр запишется в отдельную строку. История сохранится.</div></div>`;
-  }
   result.innerHTML = html;
 }
 
@@ -1135,59 +1113,9 @@ async function backgroundDownloadPhotos(payload, kv) {
 async function onKvNext() {
   if (!state.form.apartment) return;
   
-  if (state.existingVisit && state.existingVisit.payload) {
-    const payload = state.existingVisit.payload;
-    const kv = state.form.kvNumber;
-    
-    // 1. Восстанавливаем то, что уже есть в базе (офлайн фото)
-    const restorePhotos = async (arr) => {
-      if (!arr) return;
-      for (let i = 0; i < arr.length; i++) {
-        const p = arr[i];
-        p.localUrl = null; 
-        if (p.photoId) {
-          const dbPhoto = await window.db.getPhoto(p.photoId);
-          if (dbPhoto) {
-            if (dbPhoto.base64) p.localUrl = dbPhoto.base64;
-            else if (dbPhoto.blob) p.localUrl = URL.createObjectURL(dbPhoto.blob);
-          }
-        }
-        if (!p.localUrl) {
-          if (p.remote && p.remote.url) p.localUrl = p.remote.url;
-          else if (p.url) p.localUrl = p.url;
-        }
-      }
-    };
-
-    for (const sk of Object.keys(payload.results || {})) {
-      const rs = payload.results[sk];
-      await restorePhotos(rs.commonPhotos);
-      if (rs.photosByVariant) {
-        for (const variant of Object.keys(rs.photosByVariant)) {
-          await restorePhotos(rs.photosByVariant[variant]);
-        }
-      }
-    }
-    await restorePhotos(payload.extraPhotos);
-
-    // 2. Запускаем фоновую загрузку (не ждем её завершения, чтобы не тормозить интерфейс)
-    if (navigator.onLine) {
-      backgroundDownloadPhotos(payload, kv).catch(e => console.warn('Ошибка фоновой загрузки:', e));
-    }
-  }
-
-  // 3. Переносим данные в форму
-  if (state.existingVisit && state.existingVisit.payload) {
-    const prev = state.existingVisit.payload;
-    state.form.results = prev.results || {};
-    state.form.comments = prev.comments || '';
-    state.form.extraPhotos = prev.extraPhotos || [];
-    state.draftId = window.db.uuid();
-    state.form.sourceVisitId = state.existingVisit.clientId;
-  } else {
-    state.draftId = window.db.uuid();
-    state.form.sourceVisitId = null;
-  }
+  // Всегда создаем новый черновик, без привязки к старым осмотрам
+  state.draftId = window.db.uuid();
+  state.form.sourceVisitId = null;
   
   state.screen = 'newVisitRef';
   render();
@@ -1896,6 +1824,7 @@ async function checkDraftOnStart() {
 function restoreDraft(draft) {
   if (!draft || !draft.form) return;
   state.form = { kvNumber: draft.form.kvNumber || '', apartment: draft.form.apartment || null, editedFields: draft.form.editedFields || {}, divisions: draft.form.divisions || [], currentDivisionIndex: draft.form.currentDivisionIndex || 0, results: draft.form.results || {}, uploading: {}, comments: draft.form.comments || '', extraPhotos: draft.form.extraPhotos || [], sourceVisitId: draft.form.sourceVisitId || null };
+    state.form.sourceVisitId = null; // <--- ДОБАВИТЬ ЭТУ СТРОКУ
   state.draftId = draft.draftId || window.db.uuid();
   state.screen = draft.screen || 'newVisitKv';
   if (!state.form.apartment && state.screen === 'newVisitRef') state.screen = 'newVisitKv';
@@ -2198,27 +2127,9 @@ async function resetVisitAttempts(clientId) {
 
 // ================= ЗАГРУЗКА ПРОШЛЫХ ОСМОТРОВ =================
 async function loadExistingVisitsList(kv) {
-  try {
-    if (!navigator.onLine) {
-      const offline = await window.db.getOfflineVisitsByKv(kv);
-      state.existingVisits = offline.map(v => ({ clientId: v.clientId, visitedAt: v.visitedAt, email: v.email }));
-      renderKvResultBlock();
-      return;
-    }
-    const res = await apiGet('getVisitsByKv', { kvNumber: kv }, 10000);
-    const data = (res && res.data) ? res.data : res;
-    if (data && data.found && data.visits && data.visits.length) state.existingVisits = data.visits;
-    else {
-      const offline = await window.db.getOfflineVisitsByKv(kv);
-      state.existingVisits = offline.map(v => ({ clientId: v.clientId, visitedAt: v.visitedAt, email: v.email }));
-    }
-    renderKvResultBlock();
-  } catch (e) {
-    console.warn('[loadExistingVisitsList]', e.message);
-    const offline = await window.db.getOfflineVisitsByKv(kv);
-    state.existingVisits = offline.map(v => ({ clientId: v.clientId, visitedAt: v.visitedAt, email: v.email }));
-    renderKvResultBlock();
-  }
+  // Функция отключена. Прошлые осмотры не загружаются.
+  state.existingVisits = [];
+  return;
 }
 
 async function selectExistingVisit(clientId) {
@@ -2389,6 +2300,7 @@ async function fetchPhotoAsBlob(url) {
 
 // ================= ОФЛАЙН-СКАЧИВАНИЕ =================
 async function openOfflineDownloadScreen() {
+   return; // <--- ДОБАВИТЬ ЭТУ СТРОКУ
   state.offlineDownloadScreen = true;
   state.screen = 'settings';
   state.offlineTree = [];
