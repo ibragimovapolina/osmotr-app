@@ -339,7 +339,20 @@ async function getAllOfflineVisitsInfo() {
     return map;
   } catch (e) { return {}; }
 }
-
+async function clearAllOfflineVisits() {
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_OFFLINE_VISITS, 'readwrite');
+    tx.objectStore(STORE_OFFLINE_VISITS).clear();
+    return new Promise((resolve) => {
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    });
+  } catch (e) { 
+    console.warn('clearAllOfflineVisits:', e); 
+    return false; 
+  }
+}
 // ================= PHOTOS =================
 async function addPhoto(photo) {
   try {
@@ -493,7 +506,8 @@ async function silentUpdateReference() {
 
 // ================= ЭКСПОРТ =================
 window.db = {
-  saveDraft, loadDraft, clearDraft, hasDraft,
+  saveDraft,  saveOfflineVisit, getOfflineVisitsByKv, getAllOfflineVisits, getAllOfflineVisitsInfo,
+  clearAllOfflineVisits, loadDraft, clearDraft, hasDraft,
   getMeta, setMeta,
   getReference, setReference,
   getRemarks, setRemarks,
