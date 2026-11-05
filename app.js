@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.24';
+const APP_VERSION = '2.1.25';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -144,12 +144,39 @@ function hardReload() {
 async function continueStartup() {
   if (window.db && window.db.resetStuckSyncing) window.db.resetStuckSyncing(3).catch(() => {});
   setTimeout(() => { maybeAutoBackupQueue().catch(() => {}); }, 5000);
-    // НОВЫЙ БЛОК: Очистка старых офлайн-осмотров при старте (выполняется 1 раз)
+  
+  // Очистка старых офлайн-осмотров при старте
   if (window.db && window.db.clearAllOfflineVisits) {
     window.db.clearAllOfflineVisits().catch(() => {});
   }
 
   const draft = await checkDraftOnStart();
+  state.pendingDraft = draft;
+  state.screen = 'home';
+  await refreshQueueStats();
+  render();
+  if (window.db && window.db.silentUpdateReference) window.db.silentUpdateReference().catch(() => {});
+  if (window.sync && window.sync.startAutoSync) window.sync.startAutoSync();
+  
+  try {
+    state.pendingDownloadState = await window.db.getMeta('offline_download_state');
+  } catch(e) {}
+
+  window.addEventListener('online', () => {
+    if (['home', 'queue', 'visits', 'settings'].includes(state.screen)) render();
+  });
+  window.addEventListener('offline', () => {
+    if (['home', 'queue', 'visits', 'settings'].includes(state.screen)) render();
+  });
+}async function continueStartup() {
+  if (window.db && window.db.resetStuckSyncing) window.db.resetStuckSyncing(3).catch(() => {});
+  setTimeout(() => { maybeAutoBackupQueue().catch(() => {}); }, 5000);
+  
+  // Очистка старых офлайн-осмотров при старте
+  if (window.db && window.db.clearAllOfflineVisits) {
+    window.db.clearAllOfflineVisits().catch(() => {});
+  }
+
   const draft = await checkDraftOnStart();
   state.pendingDraft = draft;
   state.screen = 'home';
