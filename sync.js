@@ -57,17 +57,31 @@ async function syncNow() {
         const r = await syncVisit(visit);
         result.sent++;
         result.photos += r.photosUploaded;
-      } catch (err) {
+            } catch (err) {
         result.failed++;
         result.errors.push({ clientId: visit.clientId, error: err.message });
-        const attempts = (visit.attempts || 0) + 1;
-        await window.db.updateVisit(visit.clientId, {
-          status: 'error',
-          lastError: err.message,
-          attempts: attempts,
-          lastAttemptAt: new Date().toISOString(),
-          progress: null
-        });
+
+        const isBroken = String(err.message || '').indexOf('Фото отсутствует в локальном хранилище') !== -1;
+
+        if (isBroken) {
+          // Не инкрементим attempts — иначе уйдёт в 60-минутный бэкофф.
+          // Пользователь должен сразу увидеть проблему в UI и переснять.
+          await window.db.updateVisit(visit.clientId, {
+            status: 'broken',
+            lastError: err.message,
+            lastAttemptAt: new Date().toISOString(),
+            progress: null
+          });
+        } else {
+          const attempts = (visit.attempts || 0) + 1;
+          await window.db.updateVisit(visit.clientId, {
+            status: 'error',
+            lastError: err.message,
+            attempts: attempts,
+            lastAttemptAt: new Date().toISOString(),
+            progress: null
+          });
+        }
       }
     }
   } finally {
@@ -135,7 +149,7 @@ function shouldRetryNow(visit) {
 async function resetAllAttempts() {
   const all = await window.db.getAllVisits();
   for (const v of all) {
-    if (v.status !== 'synced') {
+    if (v.status !== 'synced' && v.status !== 'broken') {
       await window.db.updateVisit(v.clientId, {
         attempts: 0,
         lastAttemptAt: null,
@@ -236,13 +250,20 @@ async function syncVisit(visit) {
     if (p.fileName) dbPhotosMap[p.fileName] = p;
   });
 
-  let photosToUpload = [];
+   let photosToUpload = [];
+  const missingPhotos = [];
   const collectPhotos = (arr) => {
     (arr || []).forEach(p => {
+      const refId = p && (p.photoId || p.name);
       let dbPhoto = null;
       if (p.photoId) dbPhoto = dbPhotosMap[p.photoId];
       else if (p.name) dbPhoto = dbPhotosMap[p.name];
-      if (dbPhoto) photosToUpload.push(dbPhoto);
+      if (dbPhoto) {
+        photosToUpload.push(dbPhoto);
+      } else if (refId) {
+        // Payload ссылается на фото, которого нет в IDB (вытеснено iOS).
+        missingPhotos.push(refId);
+      }
     });
   };
 
@@ -253,6 +274,15 @@ async function syncVisit(visit) {
     });
   });
   collectPhotos(visit.payload.extraPhotos);
+
+  if (missingPhotos.length > 0) {
+    const list = missingPhotos.slice(0, 5).join(', ');
+    const more = missingPhotos.length > 5 ? ` и ещё ${missingPhotos.length - 5}` : '';
+    throw new Error(
+      'Фото отсутствует в локальном хранилище (' + list + more + '). ' +
+      'Переснимите эти фото и повторите отправку.'
+    );
+  }
 
   const uniquePhotos = [];
   const seen = new Set();
@@ -318,6 +348,29 @@ async function syncVisit(visit) {
   });
   notifyUI();
 
+    // === Идемпотентность: если сервер уже видел этот clientId — не шлём повторно ===
+  try {
+    const pre = await apiGet('checkVisitExistsByClientId', { clientId: visit.clientId });
+    const preData = (pre && pre.data) ? pre.data : pre;
+    if (preData && preData.found) {
+      console.warn('[sync] clientId уже есть на сервере, пропускаем submit:', visit.clientId);
+      await window.db.updateVisit(visit.clientId, {
+        status: 'synced',
+        syncedAt: new Date().toISOString(),
+        serverRow: preData.row || null,
+        progress: null,
+        lastError: ''
+      });
+      for (const p of photosToUpload) {
+        await window.db.deletePhoto(p.photoId);
+      }
+      return { photosUploaded, alreadyOnServer: true };
+    }
+  } catch (preErr) {
+    // Если pre-check не удался (сеть/таймаут) — продолжаем, иначе заблокируем отправку навсегда.
+    console.warn('[sync] pre-check checkVisitExistsByClientId не удался:', preErr.message);
+  }
+
   const res = await postApi('submitVisit', payload);
   const data = (res && res.data) ? res.data : res;
 
@@ -325,33 +378,22 @@ async function syncVisit(visit) {
     throw new Error('Сервер вернул ошибку: ' + ((data && data.error) || 'неизвестно'));
   }
 
-  await sleep(500);
-  
-  // Берем новый ID, который сгенерировал сервер (rev_...)
-  let finalClientId = visit.clientId;
-  if (data && data.clientId) {
-    finalClientId = data.clientId;
-  }
-
-  try {
+  // Пост-чек только если сервер не вернул строку — иначе доверяем ответу.
+  if (!data.row) {
+    const finalClientId = data.clientId || visit.clientId;
     const check = await apiGet('checkVisitExistsByClientId', { clientId: finalClientId });
     const checkData = (check && check.data) ? check.data : check;
     if (!checkData || !checkData.found) {
       throw new Error('Отправка не подтверждена: строка не найдена в таблице по ClientID');
     }
-  } catch (checkErr) {
-    if (String(checkErr.message).indexOf('не подтверждена') !== -1) {
-      throw checkErr;
-    }
   }
 
-  // ВАЖНО: Обновляем локальный ID визита на тот, что вернул сервер, 
-  // чтобы повторная отправка не создала дубль!
   await window.db.updateVisit(visit.clientId, {
     status: 'synced',
     syncedAt: new Date().toISOString(),
-    serverRow: (data && data.row) || null,
-    progress: null
+    serverRow: data.row || null,
+    progress: null,
+    lastError: ''
   });
 
   for (const p of photosToUpload) {
