@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.25';
+const APP_VERSION = '2.1.26';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -20,7 +20,7 @@ const state = {
   },
   submitResult: null,
   pendingDraft: null,
-  queueStats: { pendingVisits: 0, pendingPhotos: 0, totalVisits: 0, syncedVisits: 0, lastQueueBackupAt: null },
+   queueStats: { pendingVisits: 0, brokenVisits: 0, pendingPhotos: 0, totalVisits: 0, syncedVisits: 0, lastQueueBackupAt: null },
   queueList: [],
   draftId: null,
   nameMode: 'first',
@@ -143,33 +143,11 @@ function hardReload() {
 // ================= ПРОДОЛЖЕНИЕ СТАРТА =================
 async function continueStartup() {
   if (window.db && window.db.resetStuckSyncing) window.db.resetStuckSyncing(3).catch(() => {});
-  setTimeout(() => { maybeAutoBackupQueue().catch(() => {}); }, 5000);
-  
-  // Очистка старых офлайн-осмотров при старте
-  if (window.db && window.db.clearAllOfflineVisits) {
-    window.db.clearAllOfflineVisits().catch(() => {});
+  if (window.db && window.db.requestPersistentStorage) {
+    window.db.requestPersistentStorage().then(r => {
+      console.log('[storage] persist:', r);
+    }).catch(() => {});
   }
-
-  const draft = await checkDraftOnStart();
-  state.pendingDraft = draft;
-  state.screen = 'home';
-  await refreshQueueStats();
-  render();
-  if (window.db && window.db.silentUpdateReference) window.db.silentUpdateReference().catch(() => {});
-  if (window.sync && window.sync.startAutoSync) window.sync.startAutoSync();
-  
-  try {
-    state.pendingDownloadState = await window.db.getMeta('offline_download_state');
-  } catch(e) {}
-
-  window.addEventListener('online', () => {
-    if (['home', 'queue', 'visits', 'settings'].includes(state.screen)) render();
-  });
-  window.addEventListener('offline', () => {
-    if (['home', 'queue', 'visits', 'settings'].includes(state.screen)) render();
-  });
-}async function continueStartup() {
-  if (window.db && window.db.resetStuckSyncing) window.db.resetStuckSyncing(3).catch(() => {});
   setTimeout(() => { maybeAutoBackupQueue().catch(() => {}); }, 5000);
   
   // Очистка старых офлайн-осмотров при старте
@@ -663,8 +641,9 @@ async function hideVisitFromList(clientId) {
 function renderVisits(app) {
   const all = state.visitsList || [];
   let filtered = all;
-  if (state.visitsFilter === 'synced') filtered = all.filter(v => v.status === 'synced');
-  else if (state.visitsFilter === 'pending') filtered = all.filter(v => v.status !== 'synced');
+    if (state.visitsFilter === 'synced') filtered = all.filter(v => v.status === 'synced');
+  else if (state.visitsFilter === 'pending') filtered = all.filter(v => v.status !== 'synced' && v.status !== 'broken');
+  else if (state.visitsFilter === 'broken') filtered = all.filter(v => v.status === 'broken');
   filtered = filtered.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const limited = filtered.slice(0, 200);
   const itemsHtml = limited.length ? limited.map(v => renderVisitCard(v)).join('') : '<div class="hint">Здесь пока ничего нет.</div>';
@@ -673,10 +652,11 @@ function renderVisits(app) {
       <div class="step-header"><h2>Мои осмотры</h2><p>Всего: ${all.length}. Показано: ${limited.length}.</p></div>
       <div style="margin-bottom:12px;">
         <label class="field-label" style="font-size:13px;">Фильтр</label>
-        <select class="field-input" onchange="setVisitsFilter(this.value)" style="width:100%;">
+               <select class="field-input" onchange="setVisitsFilter(this.value)" style="width:100%;">
           <option value="all" ${state.visitsFilter === 'all' ? 'selected' : ''}>Все осмотры</option>
           <option value="synced" ${state.visitsFilter === 'synced' ? 'selected' : ''}>Отправленные</option>
           <option value="pending" ${state.visitsFilter === 'pending' ? 'selected' : ''}>В очереди</option>
+          <option value="broken" ${state.visitsFilter === 'broken' ? 'selected' : ''}>Без фото (требуют внимания)</option>
         </select>
       </div>
       ${itemsHtml}
@@ -695,6 +675,7 @@ function renderVisitCard(v) {
   let statusText = '⏳ В очереди';
   if (v.status === 'synced') { statusClass = 'synced'; statusText = '✅ Отправлен'; }
   else if (v.status === 'error') { statusClass = 'error'; statusText = '❌ Ошибка'; }
+  else if (v.status === 'broken') { statusClass = 'error'; statusText = '🧩 Не хватает фото'; }
   else if (v.status === 'syncing') { statusClass = 'pending'; statusText = '📤 Отправляется'; }
   const isExpanded = state.expandedVisitId === v.clientId;
   let detailsHtml = '';
@@ -823,13 +804,14 @@ function renderQueue(app) {
     const kv = v.payload && v.payload.kvNumber ? v.payload.kvNumber : '—';
     const when = v.createdAt ? new Date(v.createdAt).toLocaleString('ru-RU') : '';
     const attempts = v.attempts || 0;
-    let statusText = '';
+       let statusText = '';
     if (v.status === 'pending') statusText = '⏳ Ожидает отправки';
     else if (v.status === 'syncing') {
       if (v.progress && v.progress.stage === 'photos') statusText = '📤 Отправка фото: ' + (v.progress.current || 0) + ' из ' + (v.progress.total || 0);
       else if (v.progress && v.progress.stage === 'submit') statusText = '📤 Отправка данных осмотра…';
       else statusText = '📤 Отправляется…';
-    } else if (v.status === 'error') statusText = '❌ Ошибка (попыток: ' + attempts + '): ' + (v.lastError || '—');
+    } else if (v.status === 'broken') statusText = '🧩 Не хватает фото: ' + (v.lastError || 'переснимите и отправьте заново');
+    else if (v.status === 'error') statusText = '❌ Ошибка (попыток: ' + attempts + '): ' + (v.lastError || '—');
     else statusText = v.status;
     const photoCount = countVisitPhotos(v);
     return `
@@ -838,10 +820,13 @@ function renderQueue(app) {
         <p style="font-size:14px;color:#5f6368;margin-bottom:8px;">${escapeHtml(when)}</p>
         <p style="font-size:14px;color:${v.status === 'error' ? '#c5221f' : '#5f6368'};">${escapeHtml(statusText)}</p>
         <p style="font-size:13px;color:#5f6368;margin:8px 0;">📷 Фото: ${photoCount}</p>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
+                      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;">
           <button class="btn btn-secondary" onclick="showVisitPreview('${escapeAttr(v.clientId)}')">👁 Посмотреть</button>
-          ${navigator.onLine ? `<button class="btn btn-secondary" onclick="sendVisitNow('${escapeAttr(v.clientId)}')">📤 Отправить этот</button>` : ''}
-          <button class="btn btn-secondary" onclick="resetVisitAttempts('${escapeAttr(v.clientId)}')">🔄 Сбросить</button>
+          ${v.status === 'broken'
+            ? `<button class="btn btn-primary" onclick="recoverBrokenVisit('${escapeAttr(v.clientId)}')">✏️ Исправить</button>
+               <button class="btn btn-secondary" onclick="deleteBrokenVisit('${escapeAttr(v.clientId)}')">🗑 Удалить</button>`
+            : `${navigator.onLine ? `<button class="btn btn-secondary" onclick="sendVisitNow('${escapeAttr(v.clientId)}')">📤 Отправить этот</button>` : ''}
+               <button class="btn btn-secondary" onclick="resetVisitAttempts('${escapeAttr(v.clientId)}')">🔄 Сбросить</button>`}
         </div>
       </div>
     `;
@@ -908,7 +893,7 @@ async function showDiagnostics() {
         });
       });
     } else formatStatus = '❌ Замечания в кэше ПУСТЫ';
-    alert('🔍 Диагностика\n\nВерсия приложения: ' + APP_VERSION + '\nПользователь: ' + (state.user.name || '—') + '\n\nХранилища (' + stores.length + '):\n' + stores.join(', ') + '\n\nСправочник: ' + refCount + ' квартир\nЗамечания: ' + remCount + ' типов, ' + totalVariants + ' вариантов\n  → требуют объёма: ' + requireVolumeCount + '\nМарки окон: ' + marksCount + '\nВерсия данных: ' + (version ? JSON.stringify(version) : '—') + '\n\n🧪 Формат замечаний:\n  ' + formatStatus + '\n  Пример: ' + sampleVariant + '\n  ' + sampleInfo + '\n\nОчередь осмотров: ' + stats.pendingVisits + '\nОчередь фото: ' + stats.pendingPhotos + '\nВсего осмотров: ' + stats.totalVisits + ' (синхр.: ' + stats.syncedVisits + ')\n\nСеть: ' + (navigator.onLine ? 'онлайн' : 'офлайн'));
+       alert('🔍 Диагностика\n\nВерсия приложения: ' + APP_VERSION + '\nПользователь: ' + (state.user.name || '—') + '\n\nХранилища (' + stores.length + '):\n' + stores.join(', ') + '\n\nСправочник: ' + refCount + ' квартир\nЗамечания: ' + remCount + ' типов, ' + totalVariants + ' вариантов\n  → требуют объёма: ' + requireVolumeCount + '\nМарки окон: ' + marksCount + '\nВерсия данных: ' + (version ? JSON.stringify(version) : '—') + '\n\n🧪 Формат замечаний:\n  ' + formatStatus + '\n  Пример: ' + sampleVariant + '\n  ' + sampleInfo + '\n\nОчередь осмотров: ' + stats.pendingVisits + '\nБез фото (требуют внимания): ' + (stats.brokenVisits || 0) + '\nОчередь фото: ' + stats.pendingPhotos + '\nВсего осмотров: ' + stats.totalVisits + ' (синхр.: ' + stats.syncedVisits + ')\n\nСеть: ' + (navigator.onLine ? 'онлайн' : 'офлайн'));
   } catch (err) { alert('Ошибка диагностики: ' + err.message); }
 }
 
@@ -1824,14 +1809,14 @@ function renderSaved(app) {
 let _autoSaveTimeout = null;
 
 function autoSave() {
-  if (!window.db || !window.db.saveDraft) return;
+  if (!window.db || !window.db.saveDraft) return Promise.resolve(false);
   const draft = {
     form: { kvNumber: state.form.kvNumber, apartment: state.form.apartment, editedFields: state.form.editedFields, divisions: state.form.divisions, currentDivisionIndex: state.form.currentDivisionIndex, results: state.form.results, comments: state.form.comments, extraPhotos: state.form.extraPhotos, sourceVisitId: state.form.sourceVisitId },
     screen: state.screen,
     savedAt: new Date().toISOString(),
     draftId: state.draftId
   };
-  window.db.saveDraft(draft).catch(err => console.warn('saveDraft:', err));
+  return window.db.saveDraft(draft).catch(err => { console.warn('saveDraft:', err); return false; });
 }
 
 function debouncedAutoSave() {
@@ -2143,6 +2128,171 @@ async function sendVisitNow(clientId) {
     await refreshQueueStats();
     render();
   } catch (err) { alert('Ошибка отправки: ' + (err.message || err)); }
+}
+
+// Восстанавливает broken визит в черновик: подтягивает payload, чистит
+// ссылки на отсутствующие фото, помечает объекты без фото как ошибки,
+// удаляет старый broken визит и открывает форму для дозаполнения.
+async function recoverBrokenVisit(clientId) {
+  if (state.isSubmitting) return;
+  if (!confirm('Открыть осмотр для исправления? Фото, которые утеряны, нужно будет переснять. Старый осмотр будет заменён новым.')) return;
+
+  const visit = await window.db.getVisit(clientId);
+  if (!visit || !visit.payload) { alert('Осмотр не найден в локальном хранилище.'); return; }
+
+  const payload = visit.payload;
+  const kv = String(payload.kvNumber || '').trim();
+  if (!kv) { alert('В осмотре нет номера квартиры — восстановить нельзя.'); return; }
+
+  // 1. Восстанавливаем справочные данные квартиры
+  let apartment = null;
+  try {
+    const ref = await window.db.getReference();
+    if (ref && ref[kv.toLowerCase()]) apartment = ref[kv.toLowerCase()];
+  } catch (e) {}
+  if (!apartment && payload.apartment) apartment = payload.apartment;
+  if (!apartment) {
+    alert('Квартира ' + kv + ' отсутствует в справочнике. Обновите справочник и попробуйте снова.');
+    return;
+  }
+
+  // 2. Восстанавливаем структуру формы
+  let divisions = [];
+  try {
+    const data = await getFormDataSmart(apartment);
+    divisions = data.divisions || [];
+  } catch (e) {
+    alert('Не удалось получить структуру формы: ' + e.message);
+    return;
+  }
+
+  // 3. Собираем photoId, которые реально есть в IDB
+  const storedPhotos = await window.db.getPhotosForVisit(clientId);
+  const presentIds = new Set(storedPhotos.map(p => p.photoId));
+
+  // 4. Восстанавливаем results с чисткой битых ссылок
+  const restoredResults = {};
+  const problemKeys = []; // stateKey, где фото стало 0 при наличии замечаний
+
+  Object.keys(payload.results || {}).forEach(stateKey => {
+    const src = payload.results[stateKey] || {};
+    const rs = {
+      selected: Array.isArray(src.selected) ? src.selected.slice() : [],
+      custom: src.custom || '',
+      noIssues: !!src.noIssues,
+      volumes: src.volumes ? JSON.parse(JSON.stringify(src.volumes)) : {},
+      commonPhotos: [],
+      photosByVariant: {},
+      error: null
+    };
+
+    const keepIfPresent = (arr) => {
+      return (arr || []).filter(p => p && p.photoId && presentIds.has(p.photoId))
+        .map(p => {
+          // Восстанавливаем объект в том формате, в котором работает форма
+          const stored = storedPhotos.find(sp => sp.photoId === p.photoId);
+          return {
+            photoId: p.photoId,
+            name: p.name || (stored && stored.fileName) || '',
+            localUrl: stored ? (stored.localUrl || '') : '',
+            remote: p.remote || (stored && stored.remote) || null
+          };
+        });
+    };
+
+    rs.commonPhotos = keepIfPresent(src.commonPhotos);
+    Object.keys(src.photosByVariant || {}).forEach(variant => {
+      const kept = keepIfPresent(src.photosByVariant[variant]);
+      if (kept.length) rs.photosByVariant[variant] = kept;
+    });
+
+    const totalPhotosLeft = rs.commonPhotos.length +
+      Object.keys(rs.photosByVariant).reduce((sum, v) => sum + rs.photosByVariant[v].length, 0);
+
+    const hasRemarks = rs.selected.length > 0 || String(rs.custom || '').trim();
+    if (hasRemarks && totalPhotosLeft === 0) {
+      rs.error = 'Фото утеряны — приложите хотя бы одно фото заново';
+      problemKeys.push(stateKey);
+    }
+
+    restoredResults[stateKey] = rs;
+  });
+
+  // 5. Восстанавливаем extraPhotos (только те, что живы)
+  const restoredExtra = (payload.extraPhotos || [])
+    .filter(p => p && p.photoId && presentIds.has(p.photoId))
+    .map(p => {
+      const stored = storedPhotos.find(sp => sp.photoId === p.photoId);
+      return {
+        photoId: p.photoId,
+        name: p.name || (stored && stored.fileName) || '',
+        localUrl: stored ? (stored.localUrl || '') : '',
+        remote: p.remote || (stored && stored.remote) || null
+      };
+    });
+
+  // 6. Переносим "живые" фото-записи на новый draftId, чтобы sync их подхватил
+  const newDraftId = window.db.uuid();
+  for (const sp of storedPhotos) {
+    await window.db.addPhoto(Object.assign({}, sp, { visitClientId: newDraftId }));
+  }
+
+  // 7. Заполняем state.form
+  state.form = {
+    kvNumber: kv,
+    apartment: Object.assign({}, apartment),
+    editedFields: {},
+    divisions: divisions,
+    currentDivisionIndex: 0,
+    results: restoredResults,
+    uploading: {},
+    comments: payload.comments || '',
+    extraPhotos: restoredExtra,
+    sourceVisitId: null
+  };
+  state.draftId = newDraftId;
+  state.screen = 'division';
+  state.isSubmitting = false;
+  state.pendingDraft = null;
+
+  // 8. Открываем первый раздел, где есть проблема
+  if (problemKeys.length > 0) {
+    const firstKey = problemKeys[0];
+    const divKey = firstKey.split('.')[0];
+    const idx = divisions.findIndex(d => d.key === divKey);
+    if (idx >= 0) state.form.currentDivisionIndex = idx;
+  }
+
+  // 9. Удаляем старый broken визит и его фото
+  try {
+    for (const sp of storedPhotos) {
+      await window.db.deletePhoto(sp.photoId);
+    }
+    await window.db.deleteVisit(clientId);
+  } catch (e) {
+    console.warn('[recoverBrokenVisit] не удалось удалить старый визит:', e);
+  }
+
+  await autoSave();
+  await refreshQueueStats();
+  render();
+  window.scrollTo(0, 0);
+}
+
+async function deleteBrokenVisit(clientId) {
+  if (!confirm('Удалить этот осмотр? Фото утеряны, отправить его уже не получится.')) return;
+  try {
+    const photos = await window.db.getPhotosForVisit(clientId);
+    for (const p of photos) {
+      if (p && p.photoId) await window.db.deletePhoto(p.photoId);
+    }
+    await window.db.deleteVisit(clientId);
+    state.queueList = await window.db.getAllVisits();
+    await refreshQueueStats();
+    render();
+  } catch (e) {
+    alert('Не удалось удалить: ' + (e.message || e));
+  }
 }
 
 async function resetVisitAttempts(clientId) {
