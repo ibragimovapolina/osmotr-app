@@ -1,7 +1,7 @@
 // ================= IndexedDB v3 =================
 
 const DB_NAME = 'osmotr_db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE_DRAFTS         = 'drafts';
 const STORE_REFERENCE      = 'reference';
 const STORE_REMARKS        = 'remarks';
@@ -10,6 +10,7 @@ const STORE_META           = 'meta';
 const STORE_VISITS         = 'visits';
 const STORE_PHOTOS         = 'photos';
 const STORE_OFFLINE_VISITS = 'offline_visits';
+const STORE_SERVER_HISTORY = 'server_history';
 
 const DRAFT_KEY = 'current_draft';
 
@@ -49,9 +50,14 @@ function openDB() {
         s.createIndex('visitClientId', 'visitClientId', { unique: false });
         s.createIndex('status', 'status', { unique: false });
       }
-      if (!db.objectStoreNames.contains(STORE_OFFLINE_VISITS)) {
+            if (!db.objectStoreNames.contains(STORE_OFFLINE_VISITS)) {
         const s = db.createObjectStore(STORE_OFFLINE_VISITS, { keyPath: 'clientId' });
         s.createIndex('kvNumber', 'kvNumber', { unique: false });
+      }
+      if (!db.objectStoreNames.contains(STORE_SERVER_HISTORY)) {
+        const s = db.createObjectStore(STORE_SERVER_HISTORY, { keyPath: 'clientId' });
+        s.createIndex('kv', 'kv', { unique: false });
+        s.createIndex('visitedAt', 'visitedAt', { unique: false });
       }
     };
   });
@@ -230,7 +236,69 @@ async function getAllVisits() {
 
 async function getPendingVisits() {
   const all = await getAllVisits();
-  return all.filter(v => v.status !== 'synced');
+  const pending = all.filter(v => v.status !== 'synced' && v.status !== 'broken');
+
+  // Помечаем визиты, у которых в payload есть ссылки на фото, но самих
+  // записей в STORE_PHOTOS нет (iOS вытеснил Blob). Такие визиты НЕ отдаём
+  // в отправку — иначе они уйдут без фото молча.
+  const broken = [];
+  for (const v of pending) {
+    const ok = await _visitPhotosIntact(v);
+    if (!ok) {
+      broken.push(v);
+      await updateVisit(v.clientId, {
+        status: 'broken',
+        lastError: 'Часть фото отсутствует в локальном хранилище. Переснимите и отправьте заново.',
+        brokenAt: new Date().toISOString()
+      });
+    }
+  }
+
+  if (broken.length) {
+    console.warn('[db] getPendingVisits: помечено как broken:', broken.length);
+  }
+
+  return pending.filter(v => !broken.some(b => b.clientId === v.clientId));
+}
+
+// Проверяет, что все photoId, на которые ссылается payload, реально есть в STORE_PHOTOS.
+async function _visitPhotosIntact(visit) {
+  try {
+    const payload = visit && visit.payload;
+    if (!payload) return true;
+
+    const referencedIds = _collectReferencedPhotoIds(payload);
+    if (!referencedIds.size) return true;
+
+    const photos = await getPhotosForVisit(visit.clientId);
+    const presentIds = new Set(photos.map(p => p.photoId));
+    for (const id of referencedIds) {
+      if (!presentIds.has(id)) return false;
+    }
+    return true;
+  } catch (e) {
+    // Если проверка упала — не блокируем отправку, но фиксируем.
+    console.warn('[_visitPhotosIntact]', e);
+    return true;
+  }
+}
+
+function _collectReferencedPhotoIds(payload) {
+  const ids = new Set();
+  const push = (arr) => {
+    (arr || []).forEach(p => {
+      if (p && p.photoId) ids.add(p.photoId);
+    });
+  };
+  const results = (payload && payload.results) || {};
+  Object.keys(results).forEach(sk => {
+    const rs = results[sk] || {};
+    push(rs.commonPhotos);
+    const byVar = rs.photosByVariant || {};
+    Object.keys(byVar).forEach(v => push(byVar[v]));
+  });
+  push(payload.extraPhotos);
+  return ids;
 }
 
 async function getSyncedVisits() {
@@ -428,13 +496,31 @@ async function getQueueStats() {
   const photos = await getAllPhotos();
 
   return {
-    pendingVisits: visits.filter(v => v.status !== 'synced' && !v.hidden).length,
+    pendingVisits: visits.filter(v => v.status !== 'synced' && v.status !== 'broken' && !v.hidden).length,
+    brokenVisits: visits.filter(v => v.status === 'broken' && !v.hidden).length,
     pendingPhotos: photos.filter(p => p.status !== 'uploaded').length,
     totalVisits: visits.length,
     syncedVisits: visits.filter(v => v.status === 'synced').length
   };
 }
-
+// ================= PERSISTENT STORAGE =================
+async function requestPersistentStorage() {
+  try {
+    if (!navigator.storage || !navigator.storage.persist) {
+      return { supported: false, granted: false };
+    }
+    const already = await navigator.storage.persisted();
+    if (already) {
+      await setMeta('persistentStorage', { granted: true, at: Date.now(), already: true });
+      return { supported: true, granted: true, already: true };
+    }
+    const granted = await navigator.storage.persist();
+    await setMeta('persistentStorage', { granted: granted, at: Date.now(), already: false });
+    return { supported: true, granted: granted, already: false };
+  } catch (e) {
+    return { supported: false, granted: false, error: String(e && e.message || e) };
+  }
+}
 // ================= UUID =================
 function uuid() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -521,6 +607,7 @@ window.db = {
   getQueueStats,
   uuid,
   getUserName, setUserName,
-  silentUpdateReference,
+    silentUpdateReference,
+  requestPersistentStorage,
   _openDB: openDB
 };
