@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.28';
+const APP_VERSION = '2.1.29';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
