@@ -442,14 +442,24 @@ async function getPhoto(photoId) {
     const photo = await req(r);
     if (!photo) return null;
 
-    // Восстанавливаем Blob из ArrayBuffer, если он есть (новый формат)
+    // 1. Если есть opfsFileName — читаем из OPFS
+    if (photo.opfsFileName) {
+      const file = await opfsReadFile(photo.opfsFileName);
+      if (file) {
+        photo.blob = file;
+        return photo;
+      }
+      // Если файл в OPFS пропал (крайне редко), падаем на ArrayBuffer
+      console.warn('[db] OPFS файл не найден, пробуем ArrayBuffer:', photo.opfsFileName);
+    }
+
+    // 2. Fallback на ArrayBuffer (старый формат или если OPFS не сработал)
     if (photo.photoData && photo.photoType && !photo.blob) {
       photo.blob = new Blob([photo.photoData], { type: photo.photoType });
     }
     return photo;
   } catch (e) { return null; }
 }
-
 async function updatePhoto(photoId, patch) {
   try {
     const existing = await getPhoto(photoId);
@@ -466,12 +476,22 @@ async function getPhotosForVisit(visitClientId) {
     const r = idx.getAll(visitClientId);
     const photos = (await req(r)) || [];
     
-    // Восстанавливаем Blob из ArrayBuffer для каждого фото
-    photos.forEach(p => {
+    // Восстанавливаем Blob из OPFS или ArrayBuffer
+    for (const p of photos) {
+      if (p.opfsFileName) {
+        const file = await opfsReadFile(p.opfsFileName);
+        if (file) {
+          p.blob = file;
+          continue; // Успешно прочитали из OPFS, идем к следующему
+        }
+        console.warn('[db] OPFS файл не найден для', p.photoId, ', пробуем ArrayBuffer');
+      }
+      
+      // Fallback на ArrayBuffer
       if (p.photoData && p.photoType && !p.blob) {
         p.blob = new Blob([p.photoData], { type: p.photoType });
       }
-    });
+    }
     
     return photos;
   } catch (e) { return []; }
@@ -484,12 +504,21 @@ async function getAllPhotos() {
     const r = tx.objectStore(STORE_PHOTOS).getAll();
     const photos = (await req(r)) || [];
     
-    // Восстанавливаем Blob из ArrayBuffer
-    photos.forEach(p => {
+    // Восстанавливаем Blob из OPFS или ArrayBuffer
+    for (const p of photos) {
+      if (p.opfsFileName) {
+        const file = await opfsReadFile(p.opfsFileName);
+        if (file) {
+          p.blob = file;
+          continue;
+        }
+        console.warn('[db] OPFS файл не найден для', p.photoId, ', пробуем ArrayBuffer');
+      }
+      
       if (p.photoData && p.photoType && !p.blob) {
         p.blob = new Blob([p.photoData], { type: p.photoType });
       }
-    });
+    }
     
     return photos;
   } catch (e) { return []; }
@@ -615,8 +644,50 @@ async function silentUpdateReference() {
   }
 }
 
+// ================= OPFS =================
+async function opfsWriteFile(fileName, blob) {
+  try {
+    if (!navigator.storage || !navigator.storage.getDirectory) return false;
+    const root = await navigator.storage.getDirectory();
+    const fileHandle = await root.getFileHandle(fileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return true;
+  } catch (e) {
+    console.warn('[OPFS] write error:', e);
+    return false;
+  }
+}
+
+async function opfsReadFile(fileName) {
+  try {
+    if (!navigator.storage || !navigator.storage.getDirectory) return null;
+    const root = await navigator.storage.getDirectory();
+    const fileHandle = await root.getFileHandle(fileName);
+    return await fileHandle.getFile(); // Возвращает File (это Blob)
+  } catch (e) {
+    console.warn('[OPFS] read error:', e);
+    return null;
+  }
+}
+
+async function opfsDeleteFile(fileName) {
+  try {
+    if (!navigator.storage || !navigator.storage.getDirectory) return false;
+    const root = await navigator.storage.getDirectory();
+    await root.removeEntry(fileName);
+    return true;
+  } catch (e) {
+    console.warn('[OPFS] delete error:', e);
+    return false;
+  }
+}
+
 // ================= ЭКСПОРТ =================
-window.db = {
+window.db = { opfsWriteFile,
+  opfsReadFile,
+  opfsDeleteFile,
   saveDraft,  saveOfflineVisit, getOfflineVisitsByKv, getAllOfflineVisits, getAllOfflineVisitsInfo,
   clearAllOfflineVisits, loadDraft, clearDraft, hasDraft,
   getMeta, setMeta,
