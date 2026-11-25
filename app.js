@@ -1,12 +1,13 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.30';
+const APP_VERSION = '2.1.31';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
   user: { name: '' },
   screen: 'loading',
   form: {
+    houseId: '',
     kvNumber: '',
     apartment: null,
     editedFields: {},
@@ -256,6 +257,7 @@ function render() {
   }
   if (state.screen === 'name')        return renderNameInput(app);
   if (state.screen === 'home')        return renderHome(app);
+  if (state.screen === 'newVisitHouse') return renderNewVisitHouse(app);
   if (state.screen === 'newVisitKv')  return renderNewVisitKv(app);
   if (state.screen === 'newVisitRef') return renderNewVisitRef(app);
   if (state.screen === 'division')    return renderDivision(app);
@@ -1047,6 +1049,66 @@ function startNewVisit() {
   render();
 }
 
+async function startNewVisit() {
+  if (state.draftId) {
+    // ... (очистка старого черновика, как было)
+  }
+  state.form = { houseId: '', kvNumber: '', apartment: null, editedFields: {}, divisions: [], currentDivisionIndex: 0, results: {}, uploading: {}, comments: '', extraPhotos: [], sourceVisitId: null };
+  state.screen = 'newVisitHouse';
+  render();
+  window.scrollTo(0, 0);
+}
+
+function renderNewVisitHouse(app) {
+  app.innerHTML = `
+    <div class="card">
+      <div class="step-header"><div class="step-progress">Шаг 1</div><h2>Выберите дом</h2><p>Укажите литерал, по которому будет проходить осмотр.</p></div>
+      <div id="housesList"><div class="loading">Загрузка домов...</div></div>
+      <button class="btn btn-secondary" onclick="goHome()">← Отмена</button>
+    </div>
+  `;
+  
+  getHousesSmart().then(houses => {
+    const list = document.getElementById('housesList');
+    if (!houses || houses.length === 0) {
+      list.innerHTML = '<div class="error-box">Нет доступных домов. Проверьте интернет и лист "Дома".</div>';
+      return;
+    }
+    list.innerHTML = houses.map(h => `
+      <button class="list-row" onclick="selectHouse('${h.id}')">
+        <div class="list-row-icon blue">🏢</div>
+        <div class="list-row-content"><div class="list-row-title">${escapeHtml(h.name)}</div></div>
+        <div class="list-row-arrow">${iconChevronRight(20)}</div>
+      </button>
+    `).join('');
+  }).catch(err => {
+    document.getElementById('housesList').innerHTML = `<div class="error-box">Ошибка: ${escapeHtml(err.message)}</div>`;
+  });
+}
+
+async function getHousesSmart() {
+  if (navigator.onLine) {
+    try {
+      const res = await apiGet('getHouses');
+      const houses = (res && res.data) ? res.data : res;
+      if (Array.isArray(houses) && houses.length > 0) {
+        await window.db.setMeta('houses_cache', houses);
+        return houses;
+      }
+    } catch (e) {
+      console.warn('[houses] Ошибка сети, берем кэш:', e.message);
+    }
+  }
+  return await window.db.getMeta('houses_cache') || [];
+}
+
+function selectHouse(houseId) {
+  state.form.houseId = houseId;
+  state.screen = 'newVisitKv';
+  render();
+  // Дальше проверка квартиры пойдет уже с houseId
+}
+
 function renderNewVisitKv(app) {
   app.innerHTML = `
     <div class="card">
@@ -1142,17 +1204,18 @@ function removeKvWarningBlock() { const el = document.getElementById('kvWarningB
 
 async function checkApartmentSmart(kv) {
   const kvKey = String(kv).trim().toLowerCase();
+  const houseId = state.form.houseId;
+
   if (!navigator.onLine) {
-    const ref = await window.db.getReference();
+    const ref = await window.db.getReference(houseId); // <-- передаем houseId
     if (ref && ref[kvKey]) return { found: true, kv: kv, data: ref[kvKey], fromCache: true };
     return { found: false, kv: kv, fromCache: true };
   }
   try {
-    const res = await apiGet('checkApartment', { kvNumber: kv }, 8000);
+    const res = await apiGet('checkApartment', { kvNumber: kv, houseId: houseId }, 8000); // <-- передаем houseId
     return res.data || res;
   } catch (netErr) {
-    console.warn('[checkApartmentSmart] сеть не ответила, берём локальный кэш:', netErr.message);
-    const ref = await window.db.getReference();
+    const ref = await window.db.getReference(houseId);
     if (ref && ref[kvKey]) return { found: true, kv: kv, data: ref[kvKey], fromCache: true };
     throw netErr;
   }
@@ -1943,6 +2006,7 @@ async function submitVisit() {
     });
 
     const payload = {
+      houseId: state.form.houseId, 
       email: state.user.name || 'осмотрщик',
       kvNumber: state.form.kvNumber,
       results: cleanResults,
