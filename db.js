@@ -527,13 +527,27 @@ async function getAllPhotos() {
 async function deletePhoto(photoId) {
   try {
     const db = await openDB();
+    
+    // 1. Сначала достаем запись, чтобы узнать имя файла в OPFS
+    const txRead = db.transaction(STORE_PHOTOS, 'readonly');
+    const photo = await req(txRead.objectStore(STORE_PHOTOS).get(photoId));
+    
+    // 2. Если есть файл в OPFS — удаляем его
+    if (photo && photo.opfsFileName) {
+      await opfsDeleteFile(photo.opfsFileName);
+    }
+
+    // 3. Удаляем саму запись из IndexedDB
     const tx = db.transaction(STORE_PHOTOS, 'readwrite');
     tx.objectStore(STORE_PHOTOS).delete(photoId);
     return new Promise((resolve) => {
       tx.oncomplete = () => resolve(true);
       tx.onerror = () => resolve(false);
     });
-  } catch (e) { return false; }
+  } catch (e) { 
+    console.warn('deletePhoto error:', e);
+    return false; 
+  }
 }
 
 async function getPhotoCountsForVisit(visitClientId) {
