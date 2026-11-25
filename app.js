@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.29';
+const APP_VERSION = '2.1.30';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -60,6 +60,16 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   registerServiceWorker();
+  
+  // 1. Проверяем авторизацию
+  const token = await window.db.getMeta('authToken');
+  if (!token) {
+    state.screen = 'login';
+    render();
+    return;
+  }
+
+  // 2. Проверяем имя (как было раньше)
   const savedName = await window.db.getUserName();
   state.user.name = savedName || '';
   if (!state.user.name) {
@@ -68,6 +78,7 @@ async function init() {
     render();
     return;
   }
+  
   await continueStartup();
 }
 
@@ -193,9 +204,19 @@ async function apiGet(action, payload, timeoutMs) {
   const params = new URLSearchParams();
   params.set('action', action);
   params.set('payload', JSON.stringify(payload || {}));
+  
+  // НОВОЕ: Добавляем токен для авторизации
+  try {
+    const token = await window.db.getMeta('authToken');
+    if (token) params.set('token', token);
+  } catch (e) {
+    console.warn('[apiGet] Не удалось получить токен:', e);
+  }
+
   const url = API_URL + '?' + params.toString();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs || 15000);
+  
   try {
     const response = await fetch(url, {
       method: 'GET',
@@ -205,7 +226,9 @@ async function apiGet(action, payload, timeoutMs) {
     if (!response.ok) throw new Error('HTTP ' + response.status);
     const text = await response.text();
     return parseResponse(text);
-  } finally { clearTimeout(timer); }
+  } finally { 
+    clearTimeout(timer); 
+  }
 }
 
 function parseResponse(text) {
@@ -240,6 +263,7 @@ function render() {
   if (state.screen === 'queue')       return renderQueue(app);
   if (state.screen === 'visits')      return renderVisits(app);
   if (state.screen === 'settings')    return renderSettings(app);
+    if (state.screen === 'login')        return renderLogin(app);
 }
 
 function renderSwUpdateBanner() {
@@ -341,6 +365,86 @@ function confirmVolume() {
 }
 
 // ================= ЭКРАН ИМЕНИ =================
+// ================= ЭКРАН ЛОГИНА =================
+function renderLogin(app) {
+  app.innerHTML = `
+    <div class="user-greeting"><div class="avatar">🔐</div><div class="email">Вход в систему</div></div>
+    <div class="card">
+      <div class="step-header"><h2>Авторизация</h2><p>Введите данные, выданные администратором.</p></div>
+      
+      <div class="field-group">
+        <label class="field-label">Логин</label>
+        <input id="loginInput" class="field-input" type="text" autocomplete="username" placeholder="Ваш логин">
+      </div>
+      
+      <div class="field-group">
+        <label class="field-label">Пароль</label>
+        <input id="passwordInput" class="field-input" type="password" autocomplete="current-password" placeholder="Ваш пароль">
+      </div>
+      
+      <div id="loginError" class="error-box" style="display:none; margin-bottom:16px;"></div>
+      
+      <button class="btn btn-primary btn-large" id="loginBtn" onclick="onLoginClick()">Войти</button>
+    </div>
+  `;
+  setTimeout(() => { const i = document.getElementById('loginInput'); if (i) i.focus(); }, 100);
+}
+
+async function onLoginClick() {
+  const loginInput = document.getElementById('loginInput');
+  const passInput = document.getElementById('passwordInput');
+  const errBox = document.getElementById('loginError');
+  const btn = document.getElementById('loginBtn');
+  
+  const login = String((loginInput && loginInput.value) || '').trim();
+  const password = String((passInput && passInput.value) || '').trim();
+  
+  if (!login || !password) {
+    errBox.textContent = 'Введите логин и пароль.';
+    errBox.style.display = 'block';
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Проверка...';
+  errBox.style.display = 'none';
+
+  try {
+    const res = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'login', login: login, password: password })
+    });
+    
+    const text = await res.text();
+    const data = parseResponse(text);
+    
+    if (!data || !data.ok || !data.data || !data.data.token) {
+      throw new Error((data && data.error) || 'Неверный логин или пароль');
+    }
+    
+    // Сохраняем токен и заходим
+    await window.db.setMeta('authToken', data.data.token);
+    await window.db.setMeta('authRole', data.data.role || 'user');
+    
+    // После успешного входа запрашиваем имя
+    const savedName = await window.db.getUserName();
+    state.user.name = savedName || '';
+    if (!state.user.name) {
+      state.nameMode = 'first';
+      state.screen = 'name';
+    } else {
+      await continueStartup();
+    }
+    render();
+    
+  } catch (err) {
+    errBox.textContent = err.message || 'Ошибка входа';
+    errBox.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Войти';
+  }
+}
 function renderNameInput(app) {
   const isFirst = state.nameMode === 'first';
   const currentName = state.user.name || '';
@@ -540,6 +644,7 @@ async function renderSettings(app) {
       ${state.settingsMessage ? `<div class="update-info ${state.settingsMessage.type === 'error' ? 'error' : (state.settingsMessage.type === 'ok' ? 'ok' : '')}" style="margin-top:12px;">${escapeHtml(state.settingsMessage.text)}</div>` : ''}
     </div>
 
+
     <!-- ДИАГНОСТИКА -->
     <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 12px;">
       <div style="padding: 16px; display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleSettingsBlock('diagnostic')">
@@ -555,12 +660,17 @@ async function renderSettings(app) {
       </div>
       ` : ''}
     </div>
-
+<button class="btn btn-secondary" style="margin-top:8px; color:#c5221f;" onclick="logoutUser()">Выйти из аккаунта</button>
     <button class="btn btn-secondary" onclick="goHome()" style="margin-top: 12px;">← На главную</button>
     <div class="app-version" style="margin-top: 24px;">Осмотры квартир · v${APP_VERSION}<br>Работает офлайн</div>
   `;
 }
-
+async function logoutUser() {
+  if (!confirm('Выйти из аккаунта?')) return;
+  await window.db.setMeta('authToken', null);
+  state.screen = 'login';
+  render();
+}
 async function openNameChange() { state.nameMode = 'change'; state.screen = 'name'; render(); window.scrollTo(0, 0); }
 
 async function checkAndUpdateApp() {
@@ -2036,13 +2146,26 @@ async function postApiRaw(action, payload) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   try {
-    const response = await fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action, payload: payload }), signal: controller.signal });
+    let token = null;
+    try { token = await window.db.getMeta('authToken'); } catch (e) {}
+    
+    const response = await fetch(API_URL, { 
+      method: 'POST', 
+      headers: { 'Content-Type': 'application/json' }, 
+      body: JSON.stringify({ 
+        action: action, 
+        payload: payload,
+        token: token 
+      }), 
+      signal: controller.signal 
+    });
     if (!response.ok) throw new Error('HTTP ' + response.status);
     const text = await response.text();
     return parseResponse(text);
-  } finally { clearTimeout(timer); }
+  } finally { 
+    clearTimeout(timer); 
+  }
 }
-
 // ================= АВТО-ЗАГРУЗКА =================
 async function maybeAutoBackupQueue() {
   if (!navigator.onLine) return;
