@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.31';
+const APP_VERSION = '2.1.32';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1062,7 +1062,7 @@ async function startNewVisit() {
 function renderNewVisitHouse(app) {
   app.innerHTML = `
     <div class="card">
-      <div class="step-header"><div class="step-progress">Шаг 1</div><h2>Выберите дом</h2><p>Укажите литерал, по которому будет проходить осмотр.</p></div>
+      <div class="step-header"><div class="step-progress">Шаг 1</div><h2>Выберите дом</h2><p>Укажите литер, по которому будет проходить осмотр.</p></div>
       <div id="housesList"><div class="loading">Загрузка домов...</div></div>
       <button class="btn btn-secondary" onclick="goHome()">← Отмена</button>
     </div>
