@@ -488,10 +488,17 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 async function postApi(action, payload) {
+  let token = null;
+  try { token = await window.db.getMeta('authToken'); } catch (e) {}
+  
   const response = await fetchWithTimeout(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: action, payload: payload })
+    body: JSON.stringify({ 
+      action: action, 
+      payload: payload,
+      token: token 
+    })
   }, REQUEST_TIMEOUT_MS);
   if (!response.ok) throw new Error('HTTP ' + response.status);
   const text = await response.text();
@@ -500,10 +507,19 @@ async function postApi(action, payload) {
 
 async function uploadPhotoPost(blob, fileName, kvNumber) {
   const base64 = await blobToBase64(blob);
+  let token = null;
+  try { token = await window.db.getMeta('authToken'); } catch (e) {}
+  
   const response = await fetchWithTimeout(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'uploadPhoto', base64: base64, fileName: fileName, kvNumber: kvNumber })
+    body: JSON.stringify({ 
+      action: 'uploadPhoto', 
+      base64: base64, 
+      fileName: fileName, 
+      kvNumber: kvNumber,
+      token: token 
+    })
   }, REQUEST_TIMEOUT_MS);
   if (!response.ok) throw new Error('HTTP ' + response.status);
   const text = await response.text();
