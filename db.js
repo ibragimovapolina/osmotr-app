@@ -439,7 +439,14 @@ async function getPhoto(photoId) {
     const db = await openDB();
     const tx = db.transaction(STORE_PHOTOS, 'readonly');
     const r = tx.objectStore(STORE_PHOTOS).get(photoId);
-    return await req(r);
+    const photo = await req(r);
+    if (!photo) return null;
+
+    // Восстанавливаем Blob из ArrayBuffer, если он есть (новый формат)
+    if (photo.photoData && photo.photoType && !photo.blob) {
+      photo.blob = new Blob([photo.photoData], { type: photo.photoType });
+    }
+    return photo;
   } catch (e) { return null; }
 }
 
@@ -457,7 +464,16 @@ async function getPhotosForVisit(visitClientId) {
     const tx = db.transaction(STORE_PHOTOS, 'readonly');
     const idx = tx.objectStore(STORE_PHOTOS).index('visitClientId');
     const r = idx.getAll(visitClientId);
-    return (await req(r)) || [];
+    const photos = (await req(r)) || [];
+    
+    // Восстанавливаем Blob из ArrayBuffer для каждого фото
+    photos.forEach(p => {
+      if (p.photoData && p.photoType && !p.blob) {
+        p.blob = new Blob([p.photoData], { type: p.photoType });
+      }
+    });
+    
+    return photos;
   } catch (e) { return []; }
 }
 
@@ -466,7 +482,16 @@ async function getAllPhotos() {
     const db = await openDB();
     const tx = db.transaction(STORE_PHOTOS, 'readonly');
     const r = tx.objectStore(STORE_PHOTOS).getAll();
-    return (await req(r)) || [];
+    const photos = (await req(r)) || [];
+    
+    // Восстанавливаем Blob из ArrayBuffer
+    photos.forEach(p => {
+      if (p.photoData && p.photoType && !p.blob) {
+        p.blob = new Blob([p.photoData], { type: p.photoType });
+      }
+    });
+    
+    return photos;
   } catch (e) { return []; }
 }
 
