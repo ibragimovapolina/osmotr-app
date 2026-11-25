@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.26';
+const APP_VERSION = '2.1.27';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1433,11 +1433,30 @@ async function onPhotoSelected2(event, stateKey, variantKey) {
     try {
       const file = files[i];
       const blob = await compressImageToBlob(file);
-      const fileName = buildFileName(divisionKey, objectKey, i + 1 + photosArray.length);
-      const photoId = window.db.uuid();
-      const localUrl = URL.createObjectURL(blob);
-      const photoRecord = { photoId: photoId, visitClientId: draftId, stateKey: stateKey, variantKey: isCommon ? '' : variantKey, fileName: fileName, kvNumber: kv, blob: blob, status: 'pending', attempts: 0, lastError: '', remote: null, localUrl: localUrl };
-      await window.db.addPhoto(photoRecord);
+const fileName = buildFileName(divisionKey, objectKey, i + 1 + photosArray.length);
+const photoId = window.db.uuid();
+const localUrl = URL.createObjectURL(blob);
+
+// НОВОЕ: конвертируем Blob в ArrayBuffer для надёжного хранения
+const arrayBuffer = await blob.arrayBuffer();
+const photoType = blob.type || 'image/jpeg';
+
+const photoRecord = { 
+  photoId: photoId, 
+  visitClientId: draftId, 
+  stateKey: stateKey, 
+  variantKey: isCommon ? '' : variantKey, 
+  fileName: fileName, 
+  kvNumber: kv, 
+  photoData: arrayBuffer, // Сохраняем ArrayBuffer
+  photoType: photoType,   // Сохраняем тип
+  status: 'pending', 
+  attempts: 0, 
+  lastError: '', 
+  remote: null, 
+  localUrl: localUrl 
+};
+await window.db.addPhoto(photoRecord);
       const photoItem = { photoId: photoId, localUrl: localUrl, name: fileName, objectKey: objectKey, divisionKey: divisionKey, variantKey: isCommon ? '' : variantKey };
       if (isCommon) rs.commonPhotos.push(photoItem);
       else { if (!rs.photosByVariant[variantKey]) rs.photosByVariant[variantKey] = []; rs.photosByVariant[variantKey].push(photoItem); }
@@ -1564,13 +1583,30 @@ async function onExtraPhotoSelected(event) {
     render();
     try {
       const file = files[i];
-      const blob = await compressImageToBlob(file);
-      const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
-      const photoId = window.db.uuid();
-      const localUrl = URL.createObjectURL(blob);
-      await window.db.addPhoto({ photoId: photoId, visitClientId: draftId, stateKey: '__extra__', variantKey: '', fileName: fileName, kvNumber: kv, blob: blob, status: 'pending', attempts: 0, lastError: '', remote: null, localUrl: localUrl });
-      state.form.extraPhotos.push({ photoId: photoId, localUrl: localUrl, name: fileName });
-      render();
+const blob = await compressImageToBlob(file);
+const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
+const photoId = window.db.uuid();
+const localUrl = URL.createObjectURL(blob);
+
+// НОВОЕ: конвертируем Blob в ArrayBuffer
+const arrayBuffer = await blob.arrayBuffer();
+const photoType = blob.type || 'image/jpeg';
+
+await window.db.addPhoto({ 
+  photoId: photoId, 
+  visitClientId: draftId, 
+  stateKey: '__extra__', 
+  variantKey: '', 
+  fileName: fileName, 
+  kvNumber: kv, 
+  photoData: arrayBuffer, 
+  photoType: photoType,
+  status: 'pending', 
+  attempts: 0, 
+  lastError: '', 
+  remote: null, 
+  localUrl: localUrl 
+});
       autoSave();
     } catch (err) { console.error('Ошибка сохранения доп. фото:', err); alert('Не удалось сохранить фото: ' + (err.message || err)); }
   }
