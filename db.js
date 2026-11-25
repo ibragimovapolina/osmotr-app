@@ -133,19 +133,19 @@ async function setMeta(key, value) {
 }
 
 // ================= REFERENCE =================
-async function getReference() {
+async function getReference(houseId) {
   try {
     const db = await openDB();
     const tx = db.transaction(STORE_REFERENCE, 'readonly');
-    const r = tx.objectStore(STORE_REFERENCE).get('all');
+    const r = tx.objectStore(STORE_REFERENCE).get(houseId || 'all');
     return (await req(r)) || null;
   } catch (e) { return null; }
 }
-async function setReference(map) {
+async function setReference(houseId, map) {
   try {
     const db = await openDB();
     const tx = db.transaction(STORE_REFERENCE, 'readwrite');
-    tx.objectStore(STORE_REFERENCE).put(map || {}, 'all');
+    tx.objectStore(STORE_REFERENCE).put(map || {}, houseId || 'all');
     return new Promise((resolve) => {
       tx.oncomplete = () => resolve(true);
       tx.onerror = () => resolve(false);
