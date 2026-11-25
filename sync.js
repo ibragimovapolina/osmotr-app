@@ -361,9 +361,13 @@ async function syncVisit(visit) {
         progress: null,
         lastError: ''
       });
-      for (const p of photosToUpload) {
-        await window.db.deletePhoto(p.photoId);
-      }
+        for (const p of photosToUpload) {
+    // Удаляем файл из OPFS, если он там был
+    if (p.opfsFileName && window.db.opfsDeleteFile) {
+      await window.db.opfsDeleteFile(p.opfsFileName);
+    }
+    await window.db.deletePhoto(p.photoId);
+  }
       return { photosUploaded, alreadyOnServer: true };
     }
   } catch (preErr) {
