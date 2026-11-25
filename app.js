@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.27';
+const APP_VERSION = '2.1.28';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1433,37 +1433,56 @@ async function onPhotoSelected2(event, stateKey, variantKey) {
     try {
       const file = files[i];
       const blob = await compressImageToBlob(file);
-const fileName = buildFileName(divisionKey, objectKey, i + 1 + photosArray.length);
-const photoId = window.db.uuid();
-const localUrl = URL.createObjectURL(blob);
+      const fileName = buildFileName(divisionKey, objectKey, i + 1 + photosArray.length);
+      const photoId = window.db.uuid();
+      const localUrl = URL.createObjectURL(blob);
 
-// НОВОЕ: конвертируем Blob в ArrayBuffer для надёжного хранения
-const arrayBuffer = await blob.arrayBuffer();
-const photoType = blob.type || 'image/jpeg';
+      // НОВОЕ: Сохраняем в OPFS
+      const opfsFileName = 'photo_' + photoId + '.jpg';
+      const opfsSaved = await window.db.opfsWriteFile(opfsFileName, blob);
 
-const photoRecord = { 
-  photoId: photoId, 
-  visitClientId: draftId, 
-  stateKey: stateKey, 
-  variantKey: isCommon ? '' : variantKey, 
-  fileName: fileName, 
-  kvNumber: kv, 
-  photoData: arrayBuffer, // Сохраняем ArrayBuffer
-  photoType: photoType,   // Сохраняем тип
-  status: 'pending', 
-  attempts: 0, 
-  lastError: '', 
-  remote: null, 
-  localUrl: localUrl 
-};
-await window.db.addPhoto(photoRecord);
+      // Fallback на ArrayBuffer, если OPFS недоступен (например, старый Safari)
+      let photoData = null;
+      let photoType = null;
+      if (!opfsSaved) {
+        photoData = await blob.arrayBuffer();
+        photoType = blob.type || 'image/jpeg';
+      }
+
+      const photoRecord = { 
+        photoId: photoId, 
+        visitClientId: draftId, 
+        stateKey: stateKey, 
+        variantKey: isCommon ? '' : variantKey, 
+        fileName: fileName, 
+        kvNumber: kv, 
+        opfsFileName: opfsSaved ? opfsFileName : null, // <--- Добавлено поле для OPFS
+        photoData: photoData, // Fallback
+        photoType: photoType, // Fallback
+        status: 'pending', 
+        attempts: 0, 
+        lastError: '', 
+        remote: null, 
+        localUrl: localUrl 
+      };
+      
+      await window.db.addPhoto(photoRecord);
+
       const photoItem = { photoId: photoId, localUrl: localUrl, name: fileName, objectKey: objectKey, divisionKey: divisionKey, variantKey: isCommon ? '' : variantKey };
+      
       if (isCommon) rs.commonPhotos.push(photoItem);
-      else { if (!rs.photosByVariant[variantKey]) rs.photosByVariant[variantKey] = []; rs.photosByVariant[variantKey].push(photoItem); }
+      else { 
+        if (!rs.photosByVariant[variantKey]) rs.photosByVariant[variantKey] = []; 
+        rs.photosByVariant[variantKey].push(photoItem); 
+      }
+      
       state.form.results[stateKey] = rs;
       updateObjectCard(stateKey);
       autoSave();
-    } catch (err) { console.error('Ошибка сохранения фото:', err); alert('Не удалось сохранить фото: ' + (err.message || err)); }
+    } catch (err) { 
+      console.error('Ошибка сохранения фото:', err); 
+      alert('Не удалось сохранить фото: ' + (err.message || err)); 
+    }
   }
   delete state.form.uploading[uploadKey];
   updateObjectCard(stateKey);
@@ -1574,42 +1593,64 @@ async function onExtraPhotoSelected(event) {
   if (!files.length) return;
   event.target.value = '';
   if (!state.form.extraPhotos) state.form.extraPhotos = [];
+  
   state.form.uploading['__extra__'] = { current: 0, total: files.length };
   render();
+  
   const kv = state.form.kvNumber;
   const draftId = state.draftId || (state.draftId = window.db.uuid());
+  
   for (let i = 0; i < files.length; i++) {
     state.form.uploading['__extra__'] = { current: i + 1, total: files.length };
     render();
     try {
       const file = files[i];
-const blob = await compressImageToBlob(file);
-const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
-const photoId = window.db.uuid();
-const localUrl = URL.createObjectURL(blob);
+      const blob = await compressImageToBlob(file);
+      const fileName = buildFileName('extra', 'photo', i + 1 + state.form.extraPhotos.length);
+      const photoId = window.db.uuid();
+      const localUrl = URL.createObjectURL(blob);
 
-// НОВОЕ: конвертируем Blob в ArrayBuffer
-const arrayBuffer = await blob.arrayBuffer();
-const photoType = blob.type || 'image/jpeg';
+      // 1. Пытаемся сохранить в OPFS
+      const opfsFileName = 'extra_' + photoId + '.jpg';
+      const opfsSaved = await window.db.opfsWriteFile(opfsFileName, blob);
 
-await window.db.addPhoto({ 
-  photoId: photoId, 
-  visitClientId: draftId, 
-  stateKey: '__extra__', 
-  variantKey: '', 
-  fileName: fileName, 
-  kvNumber: kv, 
-  photoData: arrayBuffer, 
-  photoType: photoType,
-  status: 'pending', 
-  attempts: 0, 
-  lastError: '', 
-  remote: null, 
-  localUrl: localUrl 
-});
+      // 2. Fallback на ArrayBuffer, если OPFS недоступен
+      let photoData = null;
+      let photoType = null;
+      if (!opfsSaved) {
+        photoData = await blob.arrayBuffer();
+        photoType = blob.type || 'image/jpeg';
+      }
+
+      const photoRecord = {
+        photoId: photoId,
+        visitClientId: draftId,
+        stateKey: '__extra__',
+        variantKey: '',
+        fileName: fileName,
+        kvNumber: kv,
+        opfsFileName: opfsSaved ? opfsFileName : null, // <--- Добавлено поле для OPFS
+        photoData: photoData, // Fallback
+        photoType: photoType, // Fallback
+        status: 'pending',
+        attempts: 0,
+        lastError: '',
+        remote: null,
+        localUrl: localUrl
+      };
+
+      await window.db.addPhoto(photoRecord);
+
+      state.form.extraPhotos.push({ photoId: photoId, localUrl: localUrl, name: fileName });
+      
+      render();
       autoSave();
-    } catch (err) { console.error('Ошибка сохранения доп. фото:', err); alert('Не удалось сохранить фото: ' + (err.message || err)); }
+    } catch (err) {
+      console.error('Ошибка сохранения доп. фото:', err);
+      alert('Не удалось сохранить фото: ' + (err.message || err));
+    }
   }
+  
   delete state.form.uploading['__extra__'];
   render();
 }
