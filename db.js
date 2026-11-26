@@ -641,11 +641,18 @@ async function silentUpdateReference() {
       await setMeta('houses_cache', houses);
       
       // Скачиваем справочник для каждого дома
-      for (const h of houses) {
+            for (const h of houses) {
         console.log('[sync] Тянем справочник для дома:', h.name);
-        const refRes = await apiGet('getReference', { houseId: h.id });
-        const refData = (refRes && refRes.data) ? refRes.data : refRes;
-        if (refData) await setReference(h.id, refData);
+        try {
+          const refRes = await apiGet('getReference', { houseId: h.id });
+          const refData = (refRes && refRes.data) ? refRes.data : refRes;
+          if (refData && typeof refData === 'object') {
+            await setReference(h.id, refData);
+            console.log('[sync] Сохранено квартир для ' + h.name + ': ' + Object.keys(refData).length);
+          }
+        } catch (refErr) {
+          console.warn('[sync] Не удалось скачать справочник для ' + h.name + ': ' + refErr.message);
+        }
       }
     }
 
