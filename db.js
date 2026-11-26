@@ -617,47 +617,46 @@ async function silentUpdateReference() {
     const serverVersion = (ver && ver.data) ? ver.data : ver;
     const localVersion = await getMeta('version');
 
-    const noVersionYet =
-      !serverVersion ||
-      String(serverVersion.reference) === '0' ||
-      String(serverVersion.reference) === '';
-
-    const same =
-      !noVersionYet &&
-      localVersion &&
-      localVersion.reference === serverVersion.reference &&
-      localVersion.remarks === serverVersion.remarks &&
-      localVersion.marks === serverVersion.marks;
+    const noVersionYet = !serverVersion || String(serverVersion.reference) === '0' || String(serverVersion.reference) === '';
+    const same = !noVersionYet && localVersion && localVersion.reference === serverVersion.reference && localVersion.remarks === serverVersion.remarks && localVersion.marks === serverVersion.marks;
 
     if (same) {
-      console.log('[sync] Версии совпадают, обновление не нужно');
+      console.log('[sync] Версии совпадают, обновление справочника не нужно');
       return false;
     }
 
-    console.log('[sync] Тянем справочник…');
-    const refRes = await apiGet('getReference');
-    const refData = (refRes && refRes.data) ? refRes.data : refRes;
-    await setReference(refData);
-
-    console.log('[sync] Тянем правила замечаний…');
+    console.log('[sync] Тянем общие правила...');
     const remRes = await apiGet('getRemarksFull');
     const remData = (remRes && remRes.data) ? remRes.data : remRes;
-    await setRemarks(remData);
+    if (remData) await setRemarks(remData);
 
-    console.log('[sync] Тянем марки окон…');
     const markRes = await apiGet('getMarks');
     const markData = (markRes && markRes.data) ? markRes.data : markRes;
-    await setMarks(markData);
+    if (markData) await setMarks(markData);
+
+    console.log('[sync] Тянем список домов...');
+    const housesRes = await apiGet('getHouses');
+    const houses = (housesRes && housesRes.data) ? housesRes.data : housesRes;
+    if (Array.isArray(houses) && houses.length > 0) {
+      await setMeta('houses_cache', houses);
+      
+      // Скачиваем справочник для каждого дома
+      for (const h of houses) {
+        console.log('[sync] Тянем справочник для дома:', h.name);
+        const refRes = await apiGet('getReference', { houseId: h.id });
+        const refData = (refRes && refRes.data) ? refRes.data : refRes;
+        if (refData) await setReference(h.id, refData);
+      }
+    }
 
     await setMeta('version', serverVersion);
-    console.log('[sync] Готово. Справочник:', Object.keys(refData).length, 'квартир');
+    console.log('[sync] Готово.');
     return true;
   } catch (err) {
     console.warn('[sync] silentUpdateReference:', err.message);
     return false;
   }
 }
-
 // ================= OPFS =================
 async function opfsWriteFile(fileName, blob) {
   try {
