@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.37';
+const APP_VERSION = '2.1.38';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -202,36 +202,48 @@ async function refreshQueueStats() {
 // ================= API =================
 async function apiGet(action, payload, timeoutMs) {
   if (!navigator.onLine) throw new Error('Нет сети');
+  
   const params = new URLSearchParams();
   params.set('action', action);
   
   // Вытаскиваем houseId в отдельный параметр, чтобы не ломался URL
   if (payload && payload.houseId) {
     params.set('houseId', payload.houseId);
-    // Удаляем его из payload, чтобы не дублировать
     payload = Object.assign({}, payload);
     delete payload.houseId;
   }
   
   params.set('payload', JSON.stringify(payload || {}));
   
+  // Добавляем метку времени, чтобы прокси и GAS не отдавали старый кэш
+  params.set('_t', Date.now());
+  
   try {
     const token = await window.db.getMeta('authToken');
     if (token) params.set('token', token);
-  } catch (e) {}
-  
+  } catch (e) {
+    console.warn('[apiGet] Не удалось получить токен:', e);
+  }
+
   const url = API_URL + '?' + params.toString();
-  // console.log('[DEBUG] apiGet URL:', url); // раскомментируй, если снова понадобится
   
+  // Если понадобится отладка, раскомментируй строчку ниже
+  // console.log('[DEBUG] apiGet URL:', url);
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs || 15000);
   
   try {
     const response = await fetch(url, {
       method: 'GET',
-      headers: { 'Accept': 'application/json' },
-      signal: controller.signal
+      headers: { 
+        'Accept': 'application/json',
+        'Cache-Control': 'no-cache' // Просим браузер не кэшировать
+      },
+      signal: controller.signal,
+      cache: 'no-store' // Отключаем кэш fetch
     });
+    
     if (!response.ok) throw new Error('HTTP ' + response.status);
     const text = await response.text();
     return parseResponse(text);
@@ -239,7 +251,6 @@ async function apiGet(action, payload, timeoutMs) {
     clearTimeout(timer); 
   }
 }
-
 function parseResponse(text) {
   let t = String(text || '').trim();
   const match = t.match(/^[a-zA-Z0-9_$]+\((.*)\);?\s*$/s);
