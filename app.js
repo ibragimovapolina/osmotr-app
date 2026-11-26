@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.38';
+const APP_VERSION = '2.1.39';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -206,7 +206,6 @@ async function apiGet(action, payload, timeoutMs) {
   const params = new URLSearchParams();
   params.set('action', action);
   
-  // Вытаскиваем houseId в отдельный параметр, чтобы не ломался URL
   if (payload && payload.houseId) {
     params.set('houseId', payload.houseId);
     payload = Object.assign({}, payload);
@@ -214,34 +213,23 @@ async function apiGet(action, payload, timeoutMs) {
   }
   
   params.set('payload', JSON.stringify(payload || {}));
-  
-  // Добавляем метку времени, чтобы прокси и GAS не отдавали старый кэш
   params.set('_t', Date.now());
   
   try {
     const token = await window.db.getMeta('authToken');
     if (token) params.set('token', token);
-  } catch (e) {
-    console.warn('[apiGet] Не удалось получить токен:', e);
-  }
+  } catch (e) {}
 
   const url = API_URL + '?' + params.toString();
-  
-  // Если понадобится отладка, раскомментируй строчку ниже
-  // console.log('[DEBUG] apiGet URL:', url);
-
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs || 15000);
   
   try {
     const response = await fetch(url, {
       method: 'GET',
-      headers: { 
-        'Accept': 'application/json',
-        'Cache-Control': 'no-cache' // Просим браузер не кэшировать
-      },
+      headers: { 'Accept': 'application/json' }, // <-- Убрали Cache-Control
       signal: controller.signal,
-      cache: 'no-store' // Отключаем кэш fetch
+      cache: 'no-store' 
     });
     
     if (!response.ok) throw new Error('HTTP ' + response.status);
