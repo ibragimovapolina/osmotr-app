@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.32';
+const APP_VERSION = '2.1.33';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1110,17 +1110,68 @@ function selectHouse(houseId) {
 }
 
 function renderNewVisitKv(app) {
+  // Если режим не задан, ставим по умолчанию
+  if (!state.kvInputMode) state.kvInputMode = 'main';
+
+  const isMain = state.kvInputMode === 'main';
+  const isFloor = state.kvInputMode === 'floor';
+
   app.innerHTML = `
     <div class="card">
-      <div class="step-header"><div class="step-progress">Шаг 1</div><h2>Номер квартиры</h2><p>Введите номер по тех.паспорту — данные подтянутся из справочника.</p></div>
-      <label class="field-label">Номер квартиры</label>
-      <input id="kvInput" class="field-input" type="text" inputmode="numeric" autocomplete="off" placeholder="Например: 42" value="${escapeHtml(state.form.kvNumber)}" oninput="onKvInput(this.value)">
+      <div class="step-header"><div class="step-progress">Шаг 2</div><h2>Поиск квартиры</h2><p>Данные подтянутся из справочника.</p></div>
+      
+      <div style="display:flex; gap:8px; margin-bottom:16px;">
+        <button class="btn ${isMain ? 'btn-primary' : 'btn-secondary'}" style="flex:1; padding:10px 5px; font-size:14px;" onclick="switchKvInputMode('main')">По номеру</button>
+        <button class="btn ${isFloor ? 'btn-primary' : 'btn-secondary'}" style="flex:1; padding:10px 5px; font-size:14px;" onclick="switchKvInputMode('floor')">По этажу</button>
+      </div>
+
+      ${isMain ? `
+        <div class="field-group">
+          <label class="field-label">Номер квартиры по тех.паспорту</label>
+          <input id="kvInput" class="field-input" type="text" inputmode="numeric" placeholder="Например: 42" value="${escapeHtml(state.form.kvNumber || '')}" oninput="onKvInput(this.value)">
+        </div>
+      ` : `
+        <div style="display:flex; gap:12px; margin-bottom:12px;">
+          <div class="field-group" style="flex:1; margin-bottom:0;">
+            <label class="field-label">Этаж</label>
+            <input id="kvFloorInput" class="field-input" type="text" inputmode="numeric" placeholder="5" value="${escapeHtml(state.form.floorNumber || '')}" oninput="onFloorInput()">
+          </div>
+          <div class="field-group" style="flex:1; margin-bottom:0;">
+            <label class="field-label">Квартира на этаже</label>
+            <input id="kvNumFloorInput" class="field-input" type="text" inputmode="numeric" placeholder="2" value="${escapeHtml(state.form.floorKvNumber || '')}" oninput="onFloorInput()">
+          </div>
+        </div>
+      `}
+
       <div id="kvResult"></div>
       <button class="btn btn-primary btn-large" id="kvNextBtn" onclick="onKvNext()" disabled>Далее →</button>
       <button class="btn btn-secondary" onclick="goHome()">← Отмена</button>
     </div>
   `;
-  setTimeout(() => { const i = document.getElementById('kvInput'); if (i) i.focus(); }, 100);
+
+  // Восстанавливаем статус кнопки "Далее" и результат, если возвращаемся назад
+  setTimeout(() => {
+    if (state.form.apartment) {
+      renderKvResultBlock();
+      const btn = document.getElementById('kvNextBtn');
+      if (btn) btn.disabled = false;
+    }
+  }, 100);
+}
+
+function switchKvInputMode(mode) {
+  state.kvInputMode = mode;
+  state.form.kvNumber = '';
+  state.form.floorNumber = '';
+  state.form.floorKvNumber = '';
+  state.form.apartment = null;
+  render();
+}
+function switchKvInputMode(mode) {
+  state.kvInputMode = mode;
+  state.form.kvNumber = ''; // Сбрасываем старые данные
+  state.form.apartment = null;
+  render();
 }
 
 let _kvCheckTimeout = null;
@@ -1146,8 +1197,11 @@ function onKvInput(value) {
       if (data && data.found) {
         state.form.apartment = data.data;
         
-                // Загрузка прошлых осмотров отключена
-        state.existingVisits = [];
+        // === ВОЗМОЖНОСТЬ ЗАГРУЗКИ ПРОШЛЫХ ОСМОТРОВ ===
+        // Если захочешь включить обратно, просто раскомментируй строку ниже:
+        // loadExistingVisitsList(kv);
+        state.existingVisits = []; // Пока отключено
+        
         renderKvResultBlock();
         
         if (btn) btn.disabled = false;
@@ -1163,6 +1217,77 @@ function onKvInput(value) {
       removeKvWarningBlock();
     }
   }, 400);
+}
+
+function onFloorInput() {
+  const floorVal = document.getElementById('kvFloorInput').value;
+  const numVal = document.getElementById('kvNumFloorInput').value;
+  
+  state.form.floorNumber = floorVal;
+  state.form.floorKvNumber = numVal;
+  state.kvWarning = null;
+  
+  const btn = document.getElementById('kvNextBtn');
+  const result = document.getElementById('kvResult');
+  if (btn) btn.disabled = true;
+  
+  if (!floorVal || !numVal) {
+    if (result) result.innerHTML = '';
+    return;
+  }
+  
+  if (result) result.innerHTML = '<div class="hint">Проверяем…</div>';
+
+  if (_kvCheckTimeout) clearTimeout(_kvCheckTimeout);
+  _kvCheckTimeout = setTimeout(async () => {
+    try {
+      const res = await checkApartmentByFloorSmart(floorVal, numVal);
+      if (res && res.found) {
+        state.form.apartment = res.data;
+        state.form.kvNumber = res.kv; // Сохраняем сквозной номер, который нашли
+        renderKvResultBlock();
+        if (btn) btn.disabled = false;
+      } else {
+        state.form.apartment = null;
+        if (result) result.innerHTML = `<div class="apartment-not-found">⚠ На ${escapeHtml(floorVal)} этаже квартира №${escapeHtml(numVal)} не найдена.</div>`;
+      }
+    } catch (err) {
+      if (result) result.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
+    }
+  }, 400);
+}
+
+async function checkApartmentByFloorSmart(floor, numberOnFloor) {
+  const houseId = state.form.houseId;
+  let ref = null;
+  
+  if (!navigator.onLine) {
+    ref = await window.db.getReference(houseId);
+  } else {
+    try {
+      ref = await window.db.getReference(houseId);
+      if (!ref) {
+        const refRes = await apiGet('getReference', { houseId: houseId });
+        ref = (refRes && refRes.data) ? refRes.data : refRes;
+        if (ref) await window.db.setReference(houseId, ref);
+      }
+    } catch (e) {
+      ref = await window.db.getReference(houseId);
+    }
+  }
+
+  if (ref) {
+    const keys = Object.keys(ref);
+    for (const k of keys) {
+      const apt = ref[k];
+      if (apt && String(apt.floor).trim() === String(floor).trim() && 
+          String(apt.numberOnFloor).trim() === String(numberOnFloor).trim()) {
+        return { found: true, kv: k, data: apt };
+      }
+    }
+  }
+  
+  return { found: false };
 }
 
 async function checkServerVisits(kv) {
