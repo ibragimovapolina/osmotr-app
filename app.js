@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.36';
+const APP_VERSION = '2.1.37';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -204,18 +204,25 @@ async function apiGet(action, payload, timeoutMs) {
   if (!navigator.onLine) throw new Error('Нет сети');
   const params = new URLSearchParams();
   params.set('action', action);
+  
+  // Вытаскиваем houseId в отдельный параметр, чтобы не ломался URL
+  if (payload && payload.houseId) {
+    params.set('houseId', payload.houseId);
+    // Удаляем его из payload, чтобы не дублировать
+    payload = Object.assign({}, payload);
+    delete payload.houseId;
+  }
+  
   params.set('payload', JSON.stringify(payload || {}));
   
-  // НОВОЕ: Добавляем токен для авторизации
   try {
     const token = await window.db.getMeta('authToken');
     if (token) params.set('token', token);
-  } catch (e) {
-    console.warn('[apiGet] Не удалось получить токен:', e);
-  }
-
+  } catch (e) {}
+  
   const url = API_URL + '?' + params.toString();
-  console.log('[DEBUG] apiGet URL:', url);
+  // console.log('[DEBUG] apiGet URL:', url); // раскомментируй, если снова понадобится
+  
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs || 15000);
   
