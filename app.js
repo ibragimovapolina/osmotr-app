@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.35';
+const APP_VERSION = '2.1.36';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -215,6 +215,7 @@ async function apiGet(action, payload, timeoutMs) {
   }
 
   const url = API_URL + '?' + params.toString();
+  console.log('[DEBUG] apiGet URL:', url);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs || 15000);
   
