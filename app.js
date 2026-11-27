@@ -1126,11 +1126,13 @@ async function getHousesSmart() {
 
 function selectHouse(houseId) {
   state.form.houseId = houseId;
+  state.form.section = '';
+  state.form.kvNumber = '';
+  state.form.apartment = null;
   state.screen = 'newVisitKv';
   render();
   // Дальше проверка квартиры пойдет уже с houseId
 }
-
 function renderNewVisitKv(app) {
   // Если режим не задан, ставим по умолчанию
   if (!state.kvInputMode) state.kvInputMode = 'main';
@@ -1141,6 +1143,13 @@ function renderNewVisitKv(app) {
   app.innerHTML = `
     <div class="card">
       <div class="step-header"><div class="step-progress">Шаг 2</div><h2>Поиск квартиры</h2><p>Данные подтянутся из справочника.</p></div>
+
+            <div class="field-group">
+        <label class="field-label">Секция *</label>
+        <select id="sectionInput" class="field-input" onchange="onSectionChange(this.value)" disabled>
+          <option value="">Загрузка секций...</option>
+        </select>
+      </div>
       
       <div style="display:flex; gap:8px; margin-bottom:16px;">
         <button class="btn ${isMain ? 'btn-primary' : 'btn-secondary'}" style="flex:1; padding:10px 5px; font-size:14px;" onclick="switchKvInputMode('main')">По номеру</button>
@@ -1172,22 +1181,122 @@ function renderNewVisitKv(app) {
   `;
 
   // Восстанавливаем статус кнопки "Далее" и результат, если возвращаемся назад
-  setTimeout(() => {
-    if (state.form.apartment) {
-      renderKvResultBlock();
-      const btn = document.getElementById('kvNextBtn');
-      if (btn) btn.disabled = false;
-    }
-  }, 100);
+    loadSectionOptions();
 }
 
-function switchKvInputMode(mode) {
-  state.kvInputMode = mode;
+let _kvCheckTimeout = null;
+
+async function getSectionReference(houseId) {
+  if (!houseId) throw new Error('Сначала выберите дом');
+  let ref = await window.db.getReference(houseId);
+  const valid = r => r && Object.keys(r).length > 0 &&
+    Object.values(r).every(a => a && typeof a === 'object' && 'section' in a);
+  if (!valid(ref) && navigator.onLine) {
+    const res = await apiGet('getReference', { houseId }, 30000);
+    ref = res.data;
+    if (valid(ref)) await window.db.setReference(houseId, ref);
+  }
+  if (!valid(ref)) throw new Error('Обновите справочник при наличии интернета');
+  return ref;
+}
+
+async function loadSectionOptions() {
+  const select = document.getElementById('sectionInput');
+  const houseId = state.form.houseId;
+  try {
+    const ref = await getSectionReference(houseId);
+    if (document.getElementById('sectionInput') !== select) return;
+    const sections = [...new Set(Object.values(ref)
+      .map(a => String(a.section ?? '').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b, 'ru', { numeric: true }));
+    if (!sections.length) throw new Error('В справочнике не заполнены секции');
+    select.innerHTML = '<option value="">Выберите секцию</option>' +
+      sections.map(s => `<option value="${escapeHtml(s)}">Секция ${escapeHtml(s)}</option>`).join('');
+    select.value = String(state.form.section || '');
+    select.disabled = false;
+    if (select.value && state.form.apartment && String(state.form.apartment.section) === select.value) {
+      renderKvResultBlock();
+      document.getElementById('kvNextBtn').disabled = false;
+    }
+  } catch (err) {
+    if (document.getElementById('sectionInput') === select) {
+      document.getElementById('kvResult').textContent = err.message;
+    }
+  }
+}
+
+function onSectionChange(value) {
+  clearTimeout(_kvCheckTimeout);
+  state.form.section = value;
   state.form.kvNumber = '';
   state.form.floorNumber = '';
   state.form.floorKvNumber = '';
   state.form.apartment = null;
+  state.form.editedFields = {};
   render();
+}
+
+function switchKvInputMode(mode) {
+  state.kvInputMode = mode;
+  onSectionChange(state.form.section || '');
+}
+
+function onKvInput(value) {
+  state.form.kvNumber = value;
+  scheduleApartmentSearch();
+}
+
+function onFloorInput() {
+  state.form.floorNumber = document.getElementById('kvFloorInput').value;
+  state.form.floorKvNumber = document.getElementById('kvNumFloorInput').value;
+  state.form.kvNumber = '';
+  scheduleApartmentSearch();
+}
+
+function findSectionApartment(ref, section, mode, kv, floor, number) {
+  const norm = v => String(v ?? '').trim().toLowerCase();
+  return Object.entries(ref).filter(([key, apt]) =>
+    norm(section) && norm(apt.section) === norm(section) &&
+    (mode === 'main' ? norm(key) === norm(kv) :
+      norm(apt.floor) === norm(floor) && norm(apt.numberOnFloor) === norm(number)));
+}
+
+function scheduleApartmentSearch() {
+  clearTimeout(_kvCheckTimeout);
+  const result = document.getElementById('kvResult');
+  const btn = document.getElementById('kvNextBtn');
+  const { houseId, section, kvNumber, floorNumber, floorKvNumber } = state.form;
+  const mode = state.kvInputMode;
+  state.form.apartment = null;
+  state.form.editedFields = {};
+  state.kvWarning = null;
+  state.existingVisits = [];
+  btn.disabled = true;
+  result.textContent = '';
+  if (!section) { result.textContent = 'Сначала выберите секцию'; return; }
+  if (mode === 'main' ? !String(kvNumber || '').trim() :
+      !String(floorNumber || '').trim() || !String(floorKvNumber || '').trim()) return;
+  result.textContent = 'Проверяем…';
+  const current = () => document.getElementById('kvResult') === result &&
+    state.screen === 'newVisitKv' && state.kvInputMode === mode &&
+    state.form.houseId === houseId && state.form.section === section &&
+    state.form.kvNumber === kvNumber && state.form.floorNumber === floorNumber &&
+    state.form.floorKvNumber === floorKvNumber;
+  _kvCheckTimeout = setTimeout(async () => {
+    try {
+      const ref = await getSectionReference(houseId);
+      if (!current()) return;
+      const matches = findSectionApartment(ref, section, mode, kvNumber, floorNumber, floorKvNumber);
+      if (matches.length !== 1) {
+        result.textContent = matches.length ? 'Несколько совпадений. Проверьте справочник.' : 'Квартира в выбранной секции не найдена';
+        return;
+      }
+      const [kv, apt] = matches[0];
+      state.form.kvNumber = kv;
+      state.form.apartment = apt;
+      renderKvResultBlock();
+      btn.disabled = false;
+    } catch (err) { if (current()) result.textContent = err.message; }
+  }, 400);
 }
 function switchKvInputMode(mode) {
   state.kvInputMode = mode;
@@ -1335,7 +1444,8 @@ function renderKvResultBlock() {
   if (!apt) { result.innerHTML = ''; return; }
   let html = `
     <div class="apartment-preview">
-      <div class="apartment-preview-title">✓ Найдено в справочнике</div>
+          <div class="apartment-preview-title">✓ Квартира №${escapeHtml(state.form.kvNumber)}</div>
+      <div>Секция: ${escapeHtml(apt.section)}</div>
       <div class="apartment-preview-grid">
         <div><span>Площадь:</span> ${escapeHtml(apt.area || '—')}</div>
         <div><span>Этаж:</span> ${escapeHtml(apt.floor || '—')}</div>
@@ -1443,7 +1553,8 @@ async function backgroundDownloadPhotos(payload, kv) {
   }
 }
 async function onKvNext() {
-  if (!state.form.apartment) return;
+    if (!state.form.apartment || !state.form.section ||
+      String(state.form.apartment.section) !== String(state.form.section)) return;
   
   // Всегда создаем новый черновик, без привязки к старым осмотрам
   state.draftId = window.db.uuid();
@@ -2209,7 +2320,7 @@ let _autoSaveTimeout = null;
 function autoSave() {
   if (!window.db || !window.db.saveDraft) return Promise.resolve(false);
   const draft = {
-    form: { kvNumber: state.form.kvNumber, apartment: state.form.apartment, editedFields: state.form.editedFields, divisions: state.form.divisions, currentDivisionIndex: state.form.currentDivisionIndex, results: state.form.results, comments: state.form.comments, extraPhotos: state.form.extraPhotos, sourceVisitId: state.form.sourceVisitId },
+       form: { houseId: state.form.houseId, section: state.form.section, floorNumber: state.form.floorNumber, floorKvNumber: state.form.floorKvNumber, kvNumber: state.form.kvNumber, apartment: state.form.apartment, editedFields: state.form.editedFields, divisions: state.form.divisions, currentDivisionIndex: state.form.currentDivisionIndex, results: state.form.results, comments: state.form.comments, extraPhotos: state.form.extraPhotos, sourceVisitId: state.form.sourceVisitId },
     screen: state.screen,
     savedAt: new Date().toISOString(),
     draftId: state.draftId
@@ -2233,7 +2344,7 @@ async function checkDraftOnStart() {
 
 function restoreDraft(draft) {
   if (!draft || !draft.form) return;
-  state.form = { kvNumber: draft.form.kvNumber || '', apartment: draft.form.apartment || null, editedFields: draft.form.editedFields || {}, divisions: draft.form.divisions || [], currentDivisionIndex: draft.form.currentDivisionIndex || 0, results: draft.form.results || {}, uploading: {}, comments: draft.form.comments || '', extraPhotos: draft.form.extraPhotos || [], sourceVisitId: draft.form.sourceVisitId || null };
+   state.form = { houseId: draft.form.houseId || '', section: draft.form.section || '', floorNumber: draft.form.floorNumber || '', floorKvNumber: draft.form.floorKvNumber || '', kvNumber: draft.form.kvNumber || '', apartment: draft.form.apartment || null, editedFields: draft.form.editedFields || {}, divisions: draft.form.divisions || [], currentDivisionIndex: draft.form.currentDivisionIndex || 0, results: draft.form.results || {}, uploading: {}, comments: draft.form.comments || '', extraPhotos: draft.form.extraPhotos || [], sourceVisitId: draft.form.sourceVisitId || null };
     state.form.sourceVisitId = null; // <--- ДОБАВИТЬ ЭТУ СТРОКУ
   state.draftId = draft.draftId || window.db.uuid();
   state.screen = draft.screen || 'newVisitKv';
