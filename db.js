@@ -84,13 +84,13 @@ async function saveDraft(data) {
   } catch (e) { console.warn('saveDraft:', e); return false; }
 }
 
-async function loadDraft() {
+async function loadDraft(strict = false) {
   try {
     const db = await openDB();
     const tx = db.transaction(STORE_DRAFTS, 'readonly');
     const r = tx.objectStore(STORE_DRAFTS).get(DRAFT_KEY);
     return await req(r);
-  } catch (e) { console.warn('loadDraft:', e); return null; }
+    async function loadDraft(strict = false) {
 }
 
 async function clearDraft() {
@@ -208,6 +208,34 @@ async function addVisit(visit) {
   } catch (e) { console.warn('addVisit:', e); return false; }
 }
 
+    async function enqueueDraftVisit(visit) {
+  if (!visit || !visit.clientId) return false;
+  try {
+    const db = await openDB();
+    return await new Promise(resolve => {
+      const tx = db.transaction([STORE_DRAFTS, STORE_VISITS], 'readwrite');
+      tx.oncomplete = () => resolve(true);
+      tx.onabort = () => resolve(false);
+      const drafts = tx.objectStore(STORE_DRAFTS);
+      const read = drafts.get(DRAFT_KEY);
+      read.onsuccess = () => {
+        try {
+          const draft = read.result;
+          if (!draft || draft.draftId !== visit.clientId) {
+            tx.abort();
+            return;
+          }
+          tx.objectStore(STORE_VISITS).add(visit);
+          drafts.delete(DRAFT_KEY);
+        } catch (e) { tx.abort(); }
+      };
+    });
+  } catch (e) {
+    console.warn('enqueueDraftVisit:', e);
+    return false;
+  }
+}
+    
 async function getVisit(clientId) {
   try {
     const db = await openDB();
@@ -750,7 +778,7 @@ window.db = {
   getReference, setReference,
   getRemarks, setRemarks,
   getMarks, setMarks,
-  addVisit, getVisit, updateVisit, getAllVisits, getPendingVisits, getSyncedVisits,
+  addVisit, enqueueDraftVisit, getVisit, updateVisit, getAllVisits, getPendingVisits, getSyncedVisits,
   getVisibleVisits, findVisitsByKv, hideVisit, unhideVisit, deleteVisit,
   resetStuckSyncing,
   saveOfflineVisit, getOfflineVisitsByKv, getAllOfflineVisits, getAllOfflineVisitsInfo,
