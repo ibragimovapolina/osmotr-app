@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.47';
+const APP_VERSION = '2.1.48';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1145,7 +1145,7 @@ function renderNewVisitKv(app) {
       <div class="step-header"><div class="step-progress">Шаг 2</div><h2>Поиск квартиры</h2><p>Данные подтянутся из справочника.</p></div>
 
             <div class="field-group">
-        <label class="field-label">Секция *</label>
+        <label class="field-label">Секция ${isFloor ? '*' : '(необязательно)'}</label>
         <select id="sectionInput" class="field-input" onchange="onSectionChange(this.value)" disabled>
           <option value="">Загрузка секций...</option>
         </select>
@@ -1208,12 +1208,15 @@ async function loadSectionOptions() {
     if (document.getElementById('sectionInput') !== select) return;
     const sections = [...new Set(Object.values(ref)
       .map(a => String(a.section ?? '').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b, 'ru', { numeric: true }));
-    if (!sections.length) throw new Error('В справочнике не заполнены секции');
-    select.innerHTML = '<option value="">Выберите секцию</option>' +
+    select.innerHTML = (state.kvInputMode === 'main'
+  ? '<option value="">Любая секция</option>'
+  : '<option value="">Выберите секцию</option>') +
       sections.map(s => `<option value="${escapeHtml(s)}">Секция ${escapeHtml(s)}</option>`).join('');
     select.value = String(state.form.section || '');
     select.disabled = false;
-    if (select.value && state.form.apartment && String(state.form.apartment.section) === select.value) {
+    if (state.form.apartment &&
+    (state.kvInputMode === 'main' && !select.value ||
+     select.value && String(state.form.apartment.section) === select.value)) {
       renderKvResultBlock();
       document.getElementById('kvNextBtn').disabled = false;
     }
@@ -1254,10 +1257,16 @@ function onFloorInput() {
 
 function findSectionApartment(ref, section, mode, kv, floor, number) {
   const norm = v => String(v ?? '').trim().toLowerCase();
+
   return Object.entries(ref).filter(([key, apt]) =>
-    norm(section) && norm(apt.section) === norm(section) &&
-    (mode === 'main' ? norm(key) === norm(kv) :
-      norm(apt.floor) === norm(floor) && norm(apt.numberOnFloor) === norm(number)));
+    (mode === 'main'
+      ? norm(key) === norm(kv) &&
+        (!norm(section) || norm(apt.section) === norm(section))
+      : norm(section) &&
+        norm(apt.section) === norm(section) &&
+        norm(apt.floor) === norm(floor) &&
+        norm(apt.numberOnFloor) === norm(number))
+  );
 }
 
 function scheduleApartmentSearch() {
@@ -1272,7 +1281,10 @@ function scheduleApartmentSearch() {
   state.existingVisits = [];
   btn.disabled = true;
   result.textContent = '';
-  if (!section) { result.textContent = 'Сначала выберите секцию'; return; }
+  if (mode === 'floor' && !section) {
+  result.textContent = 'Сначала выберите секцию';
+  return;
+}
   if (mode === 'main' ? !String(kvNumber || '').trim() :
       !String(floorNumber || '').trim() || !String(floorKvNumber || '').trim()) return;
   result.textContent = 'Проверяем…';
@@ -1287,7 +1299,7 @@ function scheduleApartmentSearch() {
       if (!current()) return;
       const matches = findSectionApartment(ref, section, mode, kvNumber, floorNumber, floorKvNumber);
       if (matches.length !== 1) {
-        result.textContent = matches.length ? 'Несколько совпадений. Проверьте справочник.' : 'Квартира в выбранной секции не найдена';
+        result.textContent = matches.length ? 'Несколько совпадений. Проверьте справочник.' : (section ? 'Квартира в выбранной секции не найдена' : 'Квартира не найдена');
         return;
       }
       const [kv, apt] = matches[0];
@@ -1553,8 +1565,14 @@ async function backgroundDownloadPhotos(payload, kv) {
   }
 }
 async function onKvNext() {
-    if (!state.form.apartment || !state.form.section ||
-      String(state.form.apartment.section) !== String(state.form.section)) return;
+    if (!state.form.apartment) return;
+
+if (state.kvInputMode === 'floor' && !state.form.section) return;
+
+if (state.form.section &&
+    String(state.form.apartment.section) !== String(state.form.section)) return;
+
+state.form.section = String(state.form.apartment.section ?? '').trim();
   
   // Всегда создаем новый черновик, без привязки к старым осмотрам
   state.draftId = window.db.uuid();
