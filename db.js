@@ -597,84 +597,108 @@ async function setUserName(name) {
 }
 
 // ================= ТИХОЕ ОБНОВЛЕНИЕ СПРАВОЧНИКА =================
+let _referenceUpdatePromise = null;
+
 async function silentUpdateReference() {
-  if (!navigator.onLine) return false;
-  
-  // Используем нативный fetch, чтобы обойти ошибки в apiGet
-  const API = window.API_URL || 'https://osmotr-layero-proxy-main.layero.app';
-  
-  async function directFetch(action, payload) {
-    const params = new URLSearchParams();
-    params.set('action', action);
-    params.set('payload', JSON.stringify(payload || {}));
-    params.set('_t', Date.now());
-    try {
-      const token = await getMeta('authToken');
-      if (token) params.set('token', token);
-    } catch(e) {}
-    
-    const res = await fetch(API + '?' + params.toString(), { cache: 'no-store' });
-    const text = await res.text();
-    // Парсим JSONP
-    const match = text.match(/^[a-zA-Z0-9_$]+\((.*)\);?\s*$/s);
-    const jsonStr = match ? match[1] : text;
-    return JSON.parse(jsonStr);
-  }
+  if (!navigator.onLine) throw new Error('Нет интернета');
+  if (_referenceUpdatePromise) return _referenceUpdatePromise;
 
-  try {
-    const ver = await directFetch('getVersion');
-    const serverVersion = (ver && ver.data) ? ver.data : ver;
-    const localVersion = await getMeta('version');
+  _referenceUpdatePromise = (async () => {
+    async function download(action, payload) {
+      const res = await apiGet(action, payload, 30000);
 
-    const noVersionYet = !serverVersion || String(serverVersion.reference) === '0' || String(serverVersion.reference) === '';
-    const same = !noVersionYet && localVersion && localVersion.reference === serverVersion.reference && localVersion.remarks === serverVersion.remarks && localVersion.marks === serverVersion.marks;
-
-    if (same) {
-      console.log('[sync] Версии совпадают, обновление справочника не нужно');
-      return false;
-    }
-
-    console.log('[sync] Тянем общие правила...');
-    const remRes = await directFetch('getRemarksFull');
-    const remData = (remRes && remRes.data) ? remRes.data : remRes;
-    if (remData) await setRemarks(remData);
-
-    const markRes = await directFetch('getMarks');
-    const markData = (markRes && markRes.data) ? markRes.data : markRes;
-    if (markData) await setMarks(markData);
-
-    console.log('[sync] Тянем список домов...');
-    const housesRes = await directFetch('getHouses');
-    const houses = (housesRes && housesRes.data) ? housesRes.data : housesRes;
-    
-    if (Array.isArray(houses) && houses.length > 0) {
-      await setMeta('houses_cache', houses);
-      
-      for (const h of houses) {
-        console.log('[sync] Тянем справочник для дома:', h.name);
-        try {
-          const refRes = await directFetch('getReference', { houseId: h.id });
-          const refData = (refRes && refRes.data) ? refRes.data : refRes;
-          
-          if (refData && typeof refData === 'object') {
-            await setReference(h.id, refData);
-            console.log('[sync] Сохранено квартир для ' + h.name + ': ' + Object.keys(refData).length);
-          } else {
-            console.warn('[sync] Пустой справочник для дома:', h.name);
-          }
-        } catch (refErr) {
-          console.warn('[sync] Не удалось скачать справочник для ' + h.name + ':', refErr.message);
-        }
+      if (!res || res.ok !== true || !res.data) {
+        throw new Error(action + ': некорректный ответ сервера');
       }
+
+      return res.data;
     }
 
-    await setMeta('version', serverVersion);
-    console.log('[sync] Готово.');
-    return true;
-  } catch (err) {
+    const houses = await download('getHouses');
+
+    if (!Array.isArray(houses) || !houses.length) {
+      throw new Error('Не получен список домов');
+    }
+
+    const references = [];
+
+    for (const h of houses) {
+      if (!h || !h.id) {
+        throw new Error('У дома отсутствует ID');
+      }
+
+      const map = await download('getReference', {
+        houseId: h.id
+      });
+
+      const valid = map &&
+        typeof map === 'object' &&
+        !Array.isArray(map) &&
+        Object.keys(map).length > 0 &&
+        Object.values(map).every(apt =>
+          apt &&
+          typeof apt === 'object' &&
+          Object.prototype.hasOwnProperty.call(apt, 'floor') &&
+          Object.prototype.hasOwnProperty.call(apt, 'numberOnFloor') &&
+          Object.prototype.hasOwnProperty.call(apt, 'roomsNum')
+        );
+
+      if (!valid) {
+        throw new Error(
+          'Некорректный или пустой справочник: ' + h.name
+        );
+      }
+
+      references.push({ house: h, map: map });
+    }
+
+    const remarks = await download('getRemarksFull');
+    const marks = await download('getMarks');
+    const version = await download('getVersion');
+
+    const counts = [];
+
+    for (const item of references) {
+      if (!await setReference(item.house.id, item.map)) {
+        throw new Error(
+          'Не удалось сохранить справочник: ' + item.house.name
+        );
+      }
+
+      counts.push({
+        house: item.house.name,
+        count: Object.keys(item.map).length
+      });
+    }
+
+    if (!await setRemarks(remarks)) {
+      throw new Error('Не удалось сохранить замечания');
+    }
+
+    if (!await setMarks(marks)) {
+      throw new Error('Не удалось сохранить марки окон');
+    }
+
+    if (!await setMeta('houses_cache', houses)) {
+      throw new Error('Не удалось сохранить дома');
+    }
+
+    if (!await setMeta('version', version)) {
+      throw new Error('Не удалось сохранить версию');
+    }
+
+    console.table(counts);
+
+    return counts;
+
+  })().catch(err => {
     console.warn('[sync] silentUpdateReference:', err.message);
-    return false;
-  }
+    throw err;
+  }).finally(() => {
+    _referenceUpdatePromise = null;
+  });
+
+  return _referenceUpdatePromise;
 }
 
 // ================= OPFS =================
