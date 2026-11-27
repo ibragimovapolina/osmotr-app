@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.40';
+const APP_VERSION = '2.1.41';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -206,7 +206,7 @@ async function apiGet(action, payload, timeoutMs) {
   const params = new URLSearchParams();
   params.set('action', action);
   
-  // ВОЗВРАЩАЕМ houseId ВНУТРЬ payload
+  // НЕ вытаскиваем houseId в URL, оставляем его в payload
   params.set('payload', JSON.stringify(payload || {}));
   params.set('_t', Date.now());
   
