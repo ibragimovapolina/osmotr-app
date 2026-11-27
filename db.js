@@ -90,7 +90,11 @@ async function loadDraft(strict = false) {
     const tx = db.transaction(STORE_DRAFTS, 'readonly');
     const r = tx.objectStore(STORE_DRAFTS).get(DRAFT_KEY);
     return await req(r);
-    async function loadDraft(strict = false) {
+  } catch (e) {
+    console.warn('loadDraft:', e);
+    if (strict) throw e;
+    return null;
+  }
 }
 
 async function clearDraft() {
