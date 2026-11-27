@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.51';
+const APP_VERSION = '2.1.53';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1094,12 +1094,14 @@ function renderNewVisitHouse(app) {
     <div class="card">
       <div class="step-header"><div class="step-progress">Шаг 1</div><h2>Выберите дом</h2><p>Укажите литер, по которому будет проходить осмотр.</p></div>
       <div id="housesList"><div class="loading">Загрузка домов...</div></div>
-      <button class="btn btn-secondary" onclick="goHome()">← Отмена</button>
+      <button class="btn btn-secondary" onclick="backToHouse()">← Назад к выбору литера</button>
+      <button class="btn btn-secondary" onclick="cancelApartmentSelection()">← Отмена</button>
     </div>
   `;
   
+   const list = document.getElementById('housesList');
   getHousesSmart().then(houses => {
-    const list = document.getElementById('housesList');
+    if (document.getElementById('housesList') !== list) return;
     if (!houses || houses.length === 0) {
       list.innerHTML = '<div class="error-box">Нет доступных домов. Проверьте интернет и лист "Дома".</div>';
       return;
@@ -1112,7 +1114,9 @@ function renderNewVisitHouse(app) {
       </button>
     `).join('');
   }).catch(err => {
-    document.getElementById('housesList').innerHTML = `<div class="error-box">Ошибка: ${escapeHtml(err.message)}</div>`;
+        if (document.getElementById('housesList') === list) {
+      list.innerHTML = `<div class="error-box">Ошибка: ${escapeHtml(err.message)}</div>`;
+    }
   });
 }
 
@@ -1133,13 +1137,37 @@ async function getHousesSmart() {
 }
 
 function selectHouse(houseId) {
+  if (state.apartmentTransition || state.screen !== 'newVisitHouse') return;
+  clearTimeout(_kvCheckTimeout);
   state.form.houseId = houseId;
   state.form.section = '';
   state.form.kvNumber = '';
+  state.form.floorNumber = '';
+  state.form.floorKvNumber = '';
   state.form.apartment = null;
+  state.form.editedFields = {};
   state.screen = 'newVisitKv';
   render();
-  // Дальше проверка квартиры пойдет уже с houseId
+}
+
+function backToHouse() {
+  if (state.apartmentTransition || state.screen !== 'newVisitKv') return;
+  clearTimeout(_kvCheckTimeout);
+  state.screen = 'newVisitHouse';
+  render();
+}
+
+function cancelApartmentSelection() {
+  if (state.apartmentTransition) return;
+  clearTimeout(_kvCheckTimeout);
+  clearTimeout(_autoSaveTimeout);
+  const original = state.apartmentSelectionOriginal;
+  if (!original) return goHome();
+  state.form = original.form;
+  state.screen = original.screen;
+  state.kvInputMode = original.mode;
+  state.apartmentSelectionOriginal = null;
+  render();
 }
 function renderNewVisitKv(app) {
   // Если режим не задан, ставим по умолчанию
@@ -1184,7 +1212,7 @@ function renderNewVisitKv(app) {
 
       <div id="kvResult"></div>
       <button class="btn btn-primary btn-large" id="kvNextBtn" onclick="onKvNext()" disabled>Далее →</button>
-      <button class="btn btn-secondary" onclick="goHome()">← Отмена</button>
+      <button class="btn btn-secondary" onclick="cancelApartmentSelection()">← Отмена</button>
     </div>
   `;
 
@@ -1453,22 +1481,45 @@ async function backgroundDownloadPhotos(payload, kv) {
   }
 }
 async function onKvNext() {
-  if (state.screen !== 'newVisitKv' || !state.form.apartment || !state.form.houseId) return;
+  if (state.apartmentTransition || state.screen !== 'newVisitKv' ||
+      !state.form.apartment || !state.form.houseId) return;
   if (state.kvInputMode === 'floor' && !state.form.section) return;
   if (state.form.section &&
       String(state.form.apartment.section) !== String(state.form.section)) return;
 
-  state.form.section = String(state.form.apartment.section ?? '').trim();
-  state.draftId = state.draftId || window.db.uuid();
-  state.form.sourceVisitId = null;
-  state.screen = 'newVisitRef';
-  if (!await autoSave()) {
+  const candidate = state.form;
+  const previousId = state.draftId;
+  state.apartmentTransition = true;
+  document.getElementById('app').innerHTML = '<div class="loading">Проверяем квартиру…</div>';
+  try {
+    const ref = await getSectionReference(candidate.houseId);
+    const matches = findSectionApartment(ref, candidate.section, state.kvInputMode,
+      candidate.kvNumber, candidate.floorNumber, candidate.floorKvNumber);
+    if (matches.length !== 1) throw new Error('Квартира не найдена однозначно в справочнике');
+    const [kv, apt] = matches[0];
+    const original = state.apartmentSelectionOriginal;
+    const same = original && original.form.houseId === candidate.houseId &&
+      original.form.kvNumber === kv;
+    state.form = Object.assign({}, candidate, {
+      kvNumber: kv, apartment: Object.assign({}, apt),
+      section: String(apt.section ?? '').trim(),
+      floorNumber: String(apt.floor ?? ''),
+      floorKvNumber: String(apt.numberOnFloor ?? ''),
+      editedFields: same ? Object.assign({}, original.form.editedFields) : {},
+      sourceVisitId: same ? original.form.sourceVisitId : null
+    });
+    state.draftId = previousId || window.db.uuid();
+    state.screen = 'newVisitRef';
+    if (!original && !await autoSave()) throw new Error('Не удалось сохранить черновик');
+  } catch (err) {
+    state.form = candidate;
+    state.draftId = previousId;
     state.screen = 'newVisitKv';
+    alert(err.message);
+  } finally {
+    state.apartmentTransition = false;
     render();
-    alert('Не удалось сохранить черновик. Повторите попытку.');
-    return;
   }
-  render();
 }
 // ================= ШАГ 2 =================
 function renderNewVisitRef(app) {
@@ -1500,9 +1551,14 @@ function renderNewVisitRef(app) {
   `;
 }
 
-function onRefEdit(field, value) { state.form.editedFields[field] = value; debouncedAutoSave(); }
+function onRefEdit(field, value) {
+  if (state.apartmentTransition) return;
+  state.form.editedFields[field] = value;
+  debouncedAutoSave();
+}
 
 function onRefEditRoomsNum(value) {
+  if (state.apartmentTransition) return;
   state.form.editedFields.roomsNum = value;
   const app = document.getElementById('app');
   renderNewVisitRef(app);
@@ -1513,36 +1569,115 @@ function onRefEditRoomsNum(value) {
   }, 0);
 }
 
+// Сопоставление объектов по постоянным ключам, а не по порядку в форме.
+function inspectionPhotoIds(form) {
+  const ids = new Set();
+  const add = arr => (arr || []).forEach(p => { if (p && p.photoId) ids.add(p.photoId); });
+  Object.values(form.results || {}).forEach(rs => {
+    if (!rs) return;
+    add(rs.commonPhotos);
+    add(rs.photos);
+    Object.values(rs.photosByVariant || {}).forEach(add);
+  });
+  add(form.extraPhotos);
+  return ids;
+}
+
+function reconcileInspection(oldForm, divisions) {
+  const valid = new Set();
+  const labels = new Map();
+  (oldForm.divisions || []).forEach(div => div.objects.forEach(obj => {
+    labels.set(div.key + '.' + obj.key, div.title + '. ' + obj.label);
+  }));
+  divisions.forEach(div => div.objects.forEach(obj => {
+    valid.add(div.key + '.' + obj.key);
+  }));
+  const results = {};
+  const removed = [];
+  Object.entries(oldForm.results || {}).forEach(([key, rs]) => {
+    if (!rs) return;
+    if (valid.has(key)) {
+      results[key] = Object.assign({}, rs);
+      delete results[key].error;
+      return;
+    }
+    const photos = (rs.commonPhotos || []).length + (rs.photos || []).length +
+      Object.values(rs.photosByVariant || {}).reduce((n, arr) => n + (arr || []).length, 0);
+    const answers = (rs.selected || []).length + (String(rs.custom || '').trim() ? 1 : 0);
+    if (answers || photos || rs.noIssues || Object.keys(rs.volumes || {}).length) {
+      removed.push((labels.get(key) || key) + ' — ' + answers + ' замеч., ' + photos + ' фото' +
+        (rs.noIssues ? ', «Замечаний нет»' : ''));
+    }
+  });
+  const kept = inspectionPhotoIds({ results, extraPhotos: oldForm.extraPhotos });
+  const removeIds = [...inspectionPhotoIds(oldForm)].filter(id => !kept.has(id));
+  return { results, removed, removeIds };
+}
+
 async function onRefNext() {
-  if (state.isSubmittingRef) return;
+  if (state.apartmentTransition || state.isSubmittingRef || state.isSubmitting ||
+      state.screen !== 'newVisitRef' || !state.draftId || !state.form.apartment ||
+      !state.form.houseId || !state.form.kvNumber) return;
+  if (_deletingPhoto || Object.keys(state.form.uploading || {}).length) {
+    alert('Дождитесь сохранения фотографий.');
+    return;
+  }
+  clearTimeout(_autoSaveTimeout);
+  state.apartmentTransition = true;
   state.isSubmittingRef = true;
-
-  const app = document.getElementById('app');
-  app.innerHTML = '<div class="loading">Загрузка...</div>'; // Показываем загрузку
-
-  const apt = state.form.apartment || {};
-  const edited = state.form.editedFields || {};
-  state.form.apartment = Object.assign({}, apt, edited);
-  
+  const candidate = state.form;
+  const original = state.apartmentSelectionOriginal;
+  const oldForm = original ? original.form : candidate;
+  const draftId = state.draftId;
+  document.getElementById('app').innerHTML = '<div class="loading">Загрузка...</div>';
   try {
-    const data = await getFormDataSmart(state.form.apartment);
-    state.form.divisions = data.divisions || [];
-    state.form.currentDivisionIndex = 0;
+    const apartment = Object.assign({}, candidate.apartment, candidate.editedFields);
+    const data = await getFormDataSmart(apartment);
+    const divisions = data && data.divisions;
+    if (!Array.isArray(divisions) || !divisions.length ||
+        divisions.some(d => !d || !d.key || !Array.isArray(d.objects) ||
+          d.objects.some(o => !o || !o.key))) {
+      throw new Error('Некорректная структура формы');
+    }
+    const plan = reconcileInspection(oldForm, divisions);
+    if (plan.removed.length && !confirm(
+      'Из осмотра будут исключены заполненные блоки:\n\n' +
+      plan.removed.join('\n') + '\n\nОстальные данные сохранятся. Продолжить?'
+    )) return;
+
+    const next = Object.assign({}, candidate, {
+      apartment, divisions, results: plan.results,
+      currentDivisionIndex: 0, uploading: {},
+      comments: oldForm.comments, extraPhotos: oldForm.extraPhotos || []
+    });
+    // До подтверждённой записи старый черновик и фото не трогаем.
+    if (!await saveInspectionDraft(next, 'division')) {
+      throw new Error('Не удалось сохранить изменённый черновик');
+    }
+    state.form = next;
+    state.apartmentSelectionOriginal = null;
     state.screen = 'division';
+
+    // Удаляем только локальные записи этого черновика, не используемые новой формой.
+    for (const id of plan.removeIds) {
+      try {
+        const photo = await window.db.getPhoto(id);
+        if (photo && photo.visitClientId === draftId) await window.db.deletePhoto(id);
+      } catch (err) { console.warn('Не удалена исключённая фотография', err); }
+    }
+  } catch (err) {
+    alert('Не удалось обновить форму: ' + err.message);
+  } finally {
     state.isSubmittingRef = false;
+    state.apartmentTransition = false;
     render();
     window.scrollTo(0, 0);
-    autoSave();
-  } catch (err) { 
-    state.isSubmittingRef = false;
-    alert('Ошибка загрузки разделов: ' + err.message); 
-    render(); // Возвращаем экран назад при ошибке
   }
 }
 
 async function getFormDataSmart(apartment) {
   try {
-    const res = await apiGet('getFormData', { apartment: apartment });
+    const res = await apiGet('getFormData', { apartment: apartment, houseId: state.form.houseId });
     return res.data || res;
   } catch (netErr) {
     console.warn('[form] Сеть недоступна, собираем форму локально:', netErr.message);
@@ -1552,21 +1687,44 @@ async function getFormDataSmart(apartment) {
   }
 }
 
-function backToKv() {
-  if ((state.form.divisions || []).length) {
-    alert('Квартиру нельзя менять после открытия формы осмотра.');
+async function backToKv() {
+  if (state.apartmentTransition || state.isSubmitting || state.isSubmittingRef ||
+      state.screen !== 'newVisitRef') return;
+  if (_deletingPhoto || Object.keys(state.form.uploading || {}).length) {
+    alert('Дождитесь сохранения фотографий.');
     return;
   }
-  state.screen = 'newVisitKv';
-  render();
+  state.apartmentTransition = true;
+  try {
+    if (!state.apartmentSelectionOriginal) {
+      if (!state.draftId || !await autoSave()) throw new Error('Не удалось сохранить исходный черновик');
+      state.apartmentSelectionOriginal = {
+        form: state.form, screen: state.screen, mode: state.kvInputMode
+      };
+      // Поиск работает с отдельной копией реквизитов; исходные ответы не меняются.
+      state.form = Object.assign({}, state.form, {
+        apartment: Object.assign({}, state.form.apartment),
+        editedFields: Object.assign({}, state.form.editedFields)
+      });
+    }
+    clearTimeout(_autoSaveTimeout);
+    state.screen = 'newVisitKv';
+    render();
+  } catch (err) { alert(err.message); }
+  finally { state.apartmentTransition = false; }
 }
 
 async function goHome() {
-  if (state.isSubmitting || Object.keys(state.form.uploading || {}).length) {
+  if (state.apartmentTransition || state.isSubmitting || _deletingPhoto ||
+      Object.keys(state.form.uploading || {}).length) {
     alert('Дождитесь сохранения данных.');
     return;
   }
   clearTimeout(_autoSaveTimeout);
+  if (state.apartmentSelectionOriginal) {
+    cancelApartmentSelection();
+    return;
+  }
   if (['newVisitRef', 'division'].includes(state.screen) && state.draftId) {
     if (!await autoSave()) {
       alert('Не удалось сохранить черновик.');
@@ -2118,10 +2276,21 @@ async function onDivisionNext() {
 }
 
 function onDivisionBack() {
-  if (state.form.currentDivisionIndex > 0) { state.form.currentDivisionIndex--; render(); window.scrollTo(0, 0); }
-  else { state.screen = 'newVisitRef'; render(); }
+  if (state.apartmentTransition || state.isSubmitting || _deletingPhoto ||
+      Object.keys(state.form.uploading || {}).length) {
+    alert('Дождитесь сохранения данных.');
+    return;
+  }
+  if (state.form.currentDivisionIndex > 0) {
+    state.form.currentDivisionIndex--;
+    render();
+    window.scrollTo(0, 0);
+  } else {
+    state.screen = 'newVisitRef';
+    render();
+  }
+  autoSave();
 }
-
 // ================= ОТПРАВКА =================
 async function submitVisit() {
   if (state.isSubmitting) return;
@@ -2272,18 +2441,28 @@ function renderSaved(app) {
 // ================= АВТОСОХРАНЕНИЕ =================
 let _autoSaveTimeout = null;
 
-function autoSave(force = false) {
-  clearTimeout(_autoSaveTimeout);
-  if (!['newVisitRef', 'division'].includes(state.screen) ||
-      !state.draftId || (!force && state.isSubmitting)) return Promise.resolve(false);
-  if (!window.db || !window.db.saveDraft) return Promise.resolve(false);
+function saveInspectionDraft(form, screen) {
+  if (!state.draftId || !window.db || !window.db.saveDraft) return Promise.resolve(false);
   const draft = {
-       form: { houseId: state.form.houseId, section: state.form.section, floorNumber: state.form.floorNumber, floorKvNumber: state.form.floorKvNumber, kvNumber: state.form.kvNumber, apartment: state.form.apartment, editedFields: state.form.editedFields, divisions: state.form.divisions, currentDivisionIndex: state.form.currentDivisionIndex, results: state.form.results, comments: state.form.comments, extraPhotos: state.form.extraPhotos, sourceVisitId: state.form.sourceVisitId },
-    screen: state.screen,
-    savedAt: new Date().toISOString(),
-    draftId: state.draftId
+    form: {
+      houseId: form.houseId, section: form.section,
+      floorNumber: form.floorNumber, floorKvNumber: form.floorKvNumber,
+      kvNumber: form.kvNumber, apartment: form.apartment, editedFields: form.editedFields,
+      divisions: form.divisions, currentDivisionIndex: form.currentDivisionIndex,
+      results: form.results, comments: form.comments, extraPhotos: form.extraPhotos,
+      sourceVisitId: form.sourceVisitId
+    },
+    screen, savedAt: new Date().toISOString(), draftId: state.draftId
   };
   return window.db.saveDraft(draft).catch(err => { console.warn('saveDraft:', err); return false; });
+}
+
+function autoSave(force = false) {
+  clearTimeout(_autoSaveTimeout);
+  if (state.apartmentSelectionOriginal ||
+      !['newVisitRef', 'division'].includes(state.screen) ||
+      !state.draftId || (!force && state.isSubmitting)) return Promise.resolve(false);
+  return saveInspectionDraft(state.form, state.screen);
 }
 
 function debouncedAutoSave() {
