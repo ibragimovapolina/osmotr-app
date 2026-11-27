@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.46';
+const APP_VERSION = '2.1.47';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1184,7 +1184,7 @@ function renderNewVisitKv(app) {
     loadSectionOptions();
 }
 
-let _kvCheckTimeout = null;
+
 
 async function getSectionReference(houseId) {
   if (!houseId) throw new Error('Сначала выберите дом');
