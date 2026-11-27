@@ -233,247 +233,132 @@ function notifyUI() {
 }
 
 async function syncVisit(visit) {
-  await window.db.updateVisit(visit.clientId, {
-    status: 'syncing',
-    syncingStartedAt: new Date().toISOString(),
-    progress: { stage: 'photos', current: 0, total: 0 }
-  });
-
-  await new Promise(r => setTimeout(r, 1000)); 
-
-  let photosUploaded = 0;
-  
-  const allDbPhotos = await window.db.getPhotosForVisit(visit.clientId);
-  const dbPhotosMap = {};
-  allDbPhotos.forEach(p => {
-    if (p.photoId) dbPhotosMap[p.photoId] = p;
-    if (p.fileName) dbPhotosMap[p.fileName] = p;
-  });
-
-   let photosToUpload = [];
-  const missingPhotos = [];
-  const collectPhotos = (arr) => {
-    (arr || []).forEach(p => {
-      const refId = p && (p.photoId || p.name);
-      let dbPhoto = null;
-      if (p.photoId) dbPhoto = dbPhotosMap[p.photoId];
-      else if (p.name) dbPhoto = dbPhotosMap[p.name];
-      if (dbPhoto) {
-        photosToUpload.push(dbPhoto);
-      } else if (refId) {
-        // Payload ссылается на фото, которого нет в IDB (вытеснено iOS).
-        missingPhotos.push(refId);
-      }
-    });
+  const original = visit.payload;
+  if (!original || !original.houseId || !original.kvNumber || !visit.clientId) {
+    throw new Error('Не определены литер, квартира или ClientID. Осмотр оставлен в очереди.');
+  }
+  if (original.clientId && original.clientId !== visit.clientId) {
+    throw new Error('Идентификаторы осмотра не совпадают');
+  }
+  const scope = {
+    houseId: original.houseId,
+    kvNumber: original.kvNumber,
+    clientId: visit.clientId,
+    visitedAt: original.visitedAt || visit.createdAt
   };
+  if (!scope.visitedAt || !Number.isFinite(new Date(scope.visitedAt).getTime())) {
+    throw new Error('Не определена дата осмотра');
+  }
+  if (!await window.db.updateVisit(visit.clientId, {
+    status: 'syncing', syncingStartedAt: new Date().toISOString(),
+    progress: { stage: 'photos', current: 0, total: 0 }
+  })) throw new Error('Не удалось записать статус отправки');
 
-  Object.keys(visit.payload.results || {}).forEach(sk => {
-    collectPhotos(visit.payload.results[sk].commonPhotos);
-    Object.keys(visit.payload.results[sk].photosByVariant || {}).forEach(v => {
-      collectPhotos(visit.payload.results[sk].photosByVariant[v]);
+  const allPhotos = await window.db.getPhotosForVisit(visit.clientId);
+  const photosById = new Map(allPhotos.map(p => [p.photoId, p]));
+  const needed = new Map();
+  const payload = JSON.parse(JSON.stringify(original));
+  payload.clientId = scope.clientId;
+  payload.visitedAt = scope.visitedAt;
+  payload.sourceVisitId = original.sourceVisitId || null;
+
+  const urlOf = p => p && (p.url || (p.remote && p.remote.url));
+  const validUrl = url => typeof url === 'string' && /^https:\/\//i.test(url);
+  function referencePhoto(p) {
+    // Уже загруженные фото остаются по прежней ссылке.
+    if (validUrl(urlOf(p))) return { url: urlOf(p), name: p.name || '' };
+    if (!p) throw new Error('Фото отсутствует в локальном хранилище');
+    let photo = p.photoId ? photosById.get(p.photoId) : null;
+    if (!p.photoId && p.name) {
+      const matches = allPhotos.filter(x => x.fileName === p.name);
+      if (matches.length > 1) throw new Error('Неоднозначное имя фото: ' + p.name);
+      photo = matches[0];
+    }
+    if (!photo || !photo.photoId) {
+      throw new Error('Фото отсутствует в локальном хранилище: ' + (p.photoId || p.name || 'без ID'));
+    }
+    needed.set(photo.photoId, photo);
+    return { photoId: photo.photoId };
+  }
+  function convert(arr) { return (arr || []).map(referencePhoto); }
+  Object.values(payload.results || {}).forEach(rs => {
+    rs.commonPhotos = convert(rs.commonPhotos).concat(convert(rs.photos));
+    delete rs.photos;
+    Object.keys(rs.photosByVariant || {}).forEach(v => {
+      rs.photosByVariant[v] = convert(rs.photosByVariant[v]);
     });
   });
-  collectPhotos(visit.payload.extraPhotos);
+  payload.extraPhotos = convert(payload.extraPhotos);
 
-  if (missingPhotos.length > 0) {
-    const list = missingPhotos.slice(0, 5).join(', ');
-    const more = missingPhotos.length > 5 ? ` и ещё ${missingPhotos.length - 5}` : '';
-    throw new Error(
-      'Фото отсутствует в локальном хранилище (' + list + more + '). ' +
-      'Переснимите эти фото и повторите отправку.'
-    );
-  }
-
-  const uniquePhotos = [];
-  const seen = new Set();
-  photosToUpload.forEach(p => {
-    if (!seen.has(p.photoId)) {
-      seen.add(p.photoId);
-      uniquePhotos.push(p);
-    }
-  });
-  photosToUpload = uniquePhotos;
-
-  const totalPhotos = photosToUpload.length;
-  await window.db.updateVisit(visit.clientId, {
-    progress: { stage: 'photos', current: 0, total: totalPhotos }
-  });
-  notifyUI();
-
-  const photoMap = {};
-
-  for (let i = 0; i < photosToUpload.length; i++) {
-    const photo = photosToUpload[i];
+  const photos = [...needed.values()];
+  const uploaded = new Map();
+  let photosUploaded = 0;
+  for (let i = 0; i < photos.length; i++) {
+    const photo = photos[i];
     if (!navigator.onLine) throw new Error('Офлайн, синхронизация прервана');
-
-    if (photo.status === 'uploaded' && photo.remote) {
-      pushPhotoToMap(photoMap, photo.stateKey, photo.remote, photo.variantKey);
-      continue;
+    let remote = photo.status === 'uploaded' ? photo.remote : null;
+    if (!remote || !remote.fileId || !validUrl(remote.url)) {
+      if (!photo.blob || !photo.blob.size) {
+        throw new Error('Фото отсутствует в локальном хранилище: ' + photo.photoId);
+      }
+      try {
+        remote = await uploadPhotoPost(photo.blob, photo.fileName, scope, photo.photoId);
+        if (!remote || !remote.fileId || !validUrl(remote.url)) {
+          throw new Error('Сервер не подтвердил загрузку фото');
+        }
+        if (!await window.db.updatePhoto(photo.photoId, {
+          status: 'uploaded', remote: remote, uploadedAt: new Date().toISOString()
+        })) throw new Error('Не удалось сохранить подтверждение загрузки фото');
+        photosUploaded++;
+      } catch (err) {
+        await window.db.updatePhoto(photo.photoId, {
+          status: 'error', lastError: err.message, attempts: (photo.attempts || 0) + 1
+        });
+        throw err;
+      }
     }
-
-    try {
-      const remote = await uploadPhotoPost(photo.blob, photo.fileName, visit.payload.kvNumber);
-      await window.db.updatePhoto(photo.photoId, {
-        status: 'uploaded',
-        remote: remote,
-        uploadedAt: new Date().toISOString()
-      });
-      pushPhotoToMap(photoMap, photo.stateKey, remote, photo.variantKey);
-      photosUploaded++;
-
-      await window.db.updateVisit(visit.clientId, {
-        progress: { stage: 'photos', current: i + 1, total: totalPhotos }
-      });
-      notifyUI();
-    } catch (err) {
-      await window.db.updatePhoto(photo.photoId, {
-        status: 'error',
-        lastError: err.message,
-        attempts: (photo.attempts || 0) + 1
-      });
-      throw new Error('Ошибка загрузки фото: ' + err.message);
-    }
-
-    if (i < photosToUpload.length - 1) {
-      await sleep(PHOTO_PAUSE_MS);
-    }
+    uploaded.set(photo.photoId, { fileId: remote.fileId, url: remote.url, name: remote.name || photo.fileName });
+    await window.db.updateVisit(visit.clientId, {
+      progress: { stage: 'photos', current: i + 1, total: photos.length }
+    });
+    notifyUI();
+    if (i < photos.length - 1) await sleep(PHOTO_PAUSE_MS);
   }
 
-  const payload = buildPayloadWithPhotos(visit.payload, photoMap);
-  payload.clientId = visit.clientId;
-  payload.sourceVisitId = visit.payload.sourceVisitId || null;
+  // Подставляем ссылки строго на место исходных photoId, а не по названию блока.
+  function resolve(arr) {
+    return (arr || []).map(p => {
+      const remote = p.photoId ? uploaded.get(p.photoId) : p;
+      if (!remote || !validUrl(remote.url)) throw new Error('Не подтверждена загрузка фото');
+      return remote;
+    });
+  }
+  Object.values(payload.results || {}).forEach(rs => {
+    rs.commonPhotos = resolve(rs.commonPhotos);
+    Object.keys(rs.photosByVariant || {}).forEach(v => {
+      rs.photosByVariant[v] = resolve(rs.photosByVariant[v]);
+    });
+  });
+  payload.extraPhotos = resolve(payload.extraPhotos);
 
   await window.db.updateVisit(visit.clientId, {
     progress: { stage: 'submit', current: 0, total: 0 }
   });
   notifyUI();
-
-    // === Идемпотентность: если сервер уже видел этот clientId — не шлём повторно ===
-  try {
-    const pre = await apiGet('checkVisitExistsByClientId', { clientId: visit.clientId });
-    const preData = (pre && pre.data) ? pre.data : pre;
-    if (preData && preData.found) {
-      console.warn('[sync] clientId уже есть на сервере, пропускаем submit:', visit.clientId);
-      await window.db.updateVisit(visit.clientId, {
-        status: 'synced',
-        syncedAt: new Date().toISOString(),
-        serverRow: preData.row || null,
-        progress: null,
-        lastError: ''
-      });
-        for (const p of photosToUpload) {
-    // Удаляем файл из OPFS, если он там был
-    if (p.opfsFileName && window.db.opfsDeleteFile) {
-      await window.db.opfsDeleteFile(p.opfsFileName);
-    }
-    await window.db.deletePhoto(p.photoId);
+  const res = await postApi('submitVisitScoped', payload);
+  const data = res && res.data;
+  if (!res || res.ok !== true || !data || data.ok !== true ||
+      data.clientId !== visit.clientId || !Number.isInteger(data.row) || data.row < 2) {
+    throw new Error('Сервер не подтвердил запись именно этого осмотра');
   }
-      return { photosUploaded, alreadyOnServer: true };
-    }
-  } catch (preErr) {
-    // Если pre-check не удался (сеть/таймаут) — продолжаем, иначе заблокируем отправку навсегда.
-    console.warn('[sync] pre-check checkVisitExistsByClientId не удался:', preErr.message);
-  }
+  if (!await window.db.updateVisit(visit.clientId, {
+    status: 'synced', syncedAt: new Date().toISOString(),
+    serverRow: data.row, progress: null, lastError: '', payload: payload
+  })) throw new Error('Не удалось сохранить подтверждение отправки');
 
-  const res = await postApi('submitVisit', payload);
-  const data = (res && res.data) ? res.data : res;
-
-  if (!data || data.ok === false) {
-    throw new Error('Сервер вернул ошибку: ' + ((data && data.error) || 'неизвестно'));
-  }
-
-  // Пост-чек только если сервер не вернул строку — иначе доверяем ответу.
-  if (!data.row) {
-    const finalClientId = data.clientId || visit.clientId;
-    const check = await apiGet('checkVisitExistsByClientId', { clientId: finalClientId });
-    const checkData = (check && check.data) ? check.data : check;
-    if (!checkData || !checkData.found) {
-      throw new Error('Отправка не подтверждена: строка не найдена в таблице по ClientID');
-    }
-  }
-
-  await window.db.updateVisit(visit.clientId, {
-    status: 'synced',
-    syncedAt: new Date().toISOString(),
-    serverRow: data.row || null,
-    progress: null,
-    lastError: ''
-  });
-
-  for (const p of photosToUpload) {
-    await window.db.deletePhoto(p.photoId);
-  }
-
+  // Только после подтверждения сервера и локальной записи статуса.
+  for (const p of photos) await window.db.deletePhoto(p.photoId);
   return { photosUploaded };
-}
-function pushPhotoToMap(map, stateKey, remote, variantKey) {
-  if (!map[stateKey]) map[stateKey] = { common: [], byVariant: {} };
-  const entry = { fileId: remote.fileId, url: remote.url, name: remote.name };
-
-  if (variantKey && String(variantKey).trim()) {
-    const v = String(variantKey).trim();
-    if (!map[stateKey].byVariant[v]) map[stateKey].byVariant[v] = [];
-    map[stateKey].byVariant[v].push(entry);
-  } else {
-    map[stateKey].common.push(entry);
-  }
-}
-
-function buildPayloadWithPhotos(originalPayload, photoMap) {
-  const results = JSON.parse(JSON.stringify(originalPayload.results || {}));
-
-  Object.keys(photoMap).forEach(stateKey => {
-    if (stateKey === '__extra__') return;
-    const rs = results[stateKey] || { selected: [], custom: '', noIssues: false, commonPhotos: [], photosByVariant: {}, volumes: {} };
-
-    if (!rs.commonPhotos) rs.commonPhotos = [];
-    if (!rs.photosByVariant) rs.photosByVariant = {};
-
-    const bucket = photoMap[stateKey];
-    
-    // Сначала сохраняем ВСЕ существующие старые фото (из remote)
-    const existingCommon = (rs.commonPhotos || []).filter(p => p.remote && p.remote.url);
-    const existingVariants = {};
-    Object.keys(rs.photosByVariant || {}).forEach(v => {
-      existingVariants[v] = (rs.photosByVariant[v] || []).filter(p => p.remote && p.remote.url);
-    });
-
-    // Очищаем и заново заполняем
-    rs.commonPhotos = [];
-    rs.photosByVariant = rs.photosByVariant || {};
-
-    // Возвращаем старые
-    existingCommon.forEach(p => rs.commonPhotos.push(p));
-    Object.keys(existingVariants).forEach(v => {
-      if (!rs.photosByVariant[v]) rs.photosByVariant[v] = [];
-      existingVariants[v].forEach(p => rs.photosByVariant[v].push(p));
-    });
-
-    // Добавляем новые
-    (bucket.common || []).forEach(r => {
-      rs.commonPhotos.push({ fileId: r.fileId, url: r.url, name: r.name });
-    });
-    Object.keys(bucket.byVariant || {}).forEach(variant => {
-      if (!rs.photosByVariant[variant]) rs.photosByVariant[variant] = [];
-      bucket.byVariant[variant].forEach(r => {
-        rs.photosByVariant[variant].push({ fileId: r.fileId, url: r.url, name: r.name });
-      });
-    });
-
-    delete rs.photos;
-    results[stateKey] = rs;
-  });
-
-  const extraPhotos = (originalPayload.extraPhotos || []).filter(p => p && (p.url || (p.remote && p.remote.url)))
-    .concat(((photoMap['__extra__'] && photoMap['__extra__'].common) || []).map(r => ({
-      fileId: r.fileId, url: r.url, name: r.name
-    })));
-
-  return Object.assign({}, originalPayload, {
-    results: results,
-    extraPhotos: extraPhotos,
-  sourceVisitId: originalPayload.sourceVisitId || null // <--- ДОБАВИТЬ
-  });
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -505,7 +390,7 @@ async function postApi(action, payload) {
   return parseResponse(text);
 }
 
-async function uploadPhotoPost(blob, fileName, kvNumber) {
+async function uploadPhotoPost(blob, fileName, scope, photoId) {
   const base64 = await blobToBase64(blob);
   let token = null;
   try { token = await window.db.getMeta('authToken'); } catch (e) {}
@@ -514,18 +399,24 @@ async function uploadPhotoPost(blob, fileName, kvNumber) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ 
-      action: 'uploadPhoto', 
-      base64: base64, 
-      fileName: fileName, 
-      kvNumber: kvNumber,
-      token: token 
+            action: 'uploadPhotoScoped',
+      base64: base64,
+      fileName: fileName,
+      houseId: scope.houseId,
+      kvNumber: scope.kvNumber,
+      clientId: scope.clientId,
+      visitedAt: scope.visitedAt,
+      photoId: photoId,
+      token: token
     })
   }, REQUEST_TIMEOUT_MS);
   if (!response.ok) throw new Error('HTTP ' + response.status);
   const text = await response.text();
   const result = parseResponse(text);
   const data = (result && result.data) ? result.data : result;
-  if (!data || !data.fileId) throw new Error('Сервер не вернул fileId');
+    if (!data || !data.fileId || typeof data.url !== 'string' || !/^https:\/\//i.test(data.url)) {
+    throw new Error('Сервер не подтвердил загрузку фото');
+  }
   return data;
 }
 
