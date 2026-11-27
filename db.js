@@ -645,7 +645,9 @@ async function silentUpdateReference() {
         console.log('[sync] Тянем справочник для дома:', h.name);
         try {
           console.log('[DEBUG] Запрашиваем справочник для:', h.id);
-          const refRes = await apiGet('getReference', { houseId: h.id });
+          console.log('[DEBUG db.js] Отправляем houseId:', h.id);
+const refRes = await apiGet('getReference', { houseId: h.id });
+console.log('[DEBUG db.js] Ответ сервера:', refRes);
           const refData = (refRes && refRes.data) ? refRes.data : refRes;
           if (refData && typeof refData === 'object') {
             await setReference(h.id, refData);
