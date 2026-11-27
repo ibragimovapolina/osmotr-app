@@ -1,4 +1,4 @@
-// ================= IndexedDB v3 =================
+// ================= IndexedDB v4 =================
 
 const DB_NAME = 'osmotr_db';
 const DB_VERSION = 4;
@@ -50,7 +50,7 @@ function openDB() {
         s.createIndex('visitClientId', 'visitClientId', { unique: false });
         s.createIndex('status', 'status', { unique: false });
       }
-            if (!db.objectStoreNames.contains(STORE_OFFLINE_VISITS)) {
+      if (!db.objectStoreNames.contains(STORE_OFFLINE_VISITS)) {
         const s = db.createObjectStore(STORE_OFFLINE_VISITS, { keyPath: 'clientId' });
         s.createIndex('kvNumber', 'kvNumber', { unique: false });
       }
@@ -238,9 +238,6 @@ async function getPendingVisits() {
   const all = await getAllVisits();
   const pending = all.filter(v => v.status !== 'synced' && v.status !== 'broken');
 
-  // Помечаем визиты, у которых в payload есть ссылки на фото, но самих
-  // записей в STORE_PHOTOS нет (iOS вытеснил Blob). Такие визиты НЕ отдаём
-  // в отправку — иначе они уйдут без фото молча.
   const broken = [];
   for (const v of pending) {
     const ok = await _visitPhotosIntact(v);
@@ -261,7 +258,6 @@ async function getPendingVisits() {
   return pending.filter(v => !broken.some(b => b.clientId === v.clientId));
 }
 
-// Проверяет, что все photoId, на которые ссылается payload, реально есть в STORE_PHOTOS.
 async function _visitPhotosIntact(visit) {
   try {
     const payload = visit && visit.payload;
@@ -277,7 +273,6 @@ async function _visitPhotosIntact(visit) {
     }
     return true;
   } catch (e) {
-    // Если проверка упала — не блокируем отправку, но фиксируем.
     console.warn('[_visitPhotosIntact]', e);
     return true;
   }
@@ -392,7 +387,6 @@ async function getAllOfflineVisits() {
   } catch (e) { return []; }
 }
 
-// Функция для получения статистики по скачанным квартирам
 async function getAllOfflineVisitsInfo() {
   try {
     const visits = await getAllOfflineVisits();
@@ -421,6 +415,7 @@ async function clearAllOfflineVisits() {
     return false; 
   }
 }
+
 // ================= PHOTOS =================
 async function addPhoto(photo) {
   try {
@@ -442,18 +437,15 @@ async function getPhoto(photoId) {
     const photo = await req(r);
     if (!photo) return null;
 
-    // 1. Если есть opfsFileName — читаем из OPFS
     if (photo.opfsFileName) {
       const file = await opfsReadFile(photo.opfsFileName);
       if (file) {
         photo.blob = file;
         return photo;
       }
-      // Если файл в OPFS пропал (крайне редко), падаем на ArrayBuffer
       console.warn('[db] OPFS файл не найден, пробуем ArrayBuffer:', photo.opfsFileName);
     }
 
-    // 2. Fallback на ArrayBuffer (старый формат или если OPFS не сработал)
     if (photo.photoData && photo.photoType && !photo.blob) {
       photo.blob = new Blob([photo.photoData], { type: photo.photoType });
     }
@@ -476,18 +468,16 @@ async function getPhotosForVisit(visitClientId) {
     const r = idx.getAll(visitClientId);
     const photos = (await req(r)) || [];
     
-    // Восстанавливаем Blob из OPFS или ArrayBuffer
     for (const p of photos) {
       if (p.opfsFileName) {
         const file = await opfsReadFile(p.opfsFileName);
         if (file) {
           p.blob = file;
-          continue; // Успешно прочитали из OPFS, идем к следующему
+          continue;
         }
         console.warn('[db] OPFS файл не найден для', p.photoId, ', пробуем ArrayBuffer');
       }
       
-      // Fallback на ArrayBuffer
       if (p.photoData && p.photoType && !p.blob) {
         p.blob = new Blob([p.photoData], { type: p.photoType });
       }
@@ -504,7 +494,6 @@ async function getAllPhotos() {
     const r = tx.objectStore(STORE_PHOTOS).getAll();
     const photos = (await req(r)) || [];
     
-    // Восстанавливаем Blob из OPFS или ArrayBuffer
     for (const p of photos) {
       if (p.opfsFileName) {
         const file = await opfsReadFile(p.opfsFileName);
@@ -528,16 +517,13 @@ async function deletePhoto(photoId) {
   try {
     const db = await openDB();
     
-    // 1. Сначала достаем запись, чтобы узнать имя файла в OPFS
     const txRead = db.transaction(STORE_PHOTOS, 'readonly');
     const photo = await req(txRead.objectStore(STORE_PHOTOS).get(photoId));
     
-    // 2. Если есть файл в OPFS — удаляем его
     if (photo && photo.opfsFileName) {
       await opfsDeleteFile(photo.opfsFileName);
     }
 
-    // 3. Удаляем саму запись из IndexedDB
     const tx = db.transaction(STORE_PHOTOS, 'readwrite');
     tx.objectStore(STORE_PHOTOS).delete(photoId);
     return new Promise((resolve) => {
@@ -571,6 +557,7 @@ async function getQueueStats() {
     syncedVisits: visits.filter(v => v.status === 'synced').length
   };
 }
+
 // ================= PERSISTENT STORAGE =================
 async function requestPersistentStorage() {
   try {
@@ -589,6 +576,7 @@ async function requestPersistentStorage() {
     return { supported: false, granted: false, error: String(e && e.message || e) };
   }
 }
+
 // ================= UUID =================
 function uuid() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -611,9 +599,30 @@ async function setUserName(name) {
 // ================= ТИХОЕ ОБНОВЛЕНИЕ СПРАВОЧНИКА =================
 async function silentUpdateReference() {
   if (!navigator.onLine) return false;
-  if (typeof apiGet !== 'function') return false;
+  
+  // Используем нативный fetch, чтобы обойти ошибки в apiGet
+  const API = window.API_URL || 'https://osmotr-layero-proxy-main.layero.app';
+  
+  async function directFetch(action, payload) {
+    const params = new URLSearchParams();
+    params.set('action', action);
+    params.set('payload', JSON.stringify(payload || {}));
+    params.set('_t', Date.now());
+    try {
+      const token = await getMeta('authToken');
+      if (token) params.set('token', token);
+    } catch(e) {}
+    
+    const res = await fetch(API + '?' + params.toString(), { cache: 'no-store' });
+    const text = await res.text();
+    // Парсим JSONP
+    const match = text.match(/^[a-zA-Z0-9_$]+\((.*)\);?\s*$/s);
+    const jsonStr = match ? match[1] : text;
+    return JSON.parse(jsonStr);
+  }
+
   try {
-    const ver = await apiGet('getVersion');
+    const ver = await directFetch('getVersion');
     const serverVersion = (ver && ver.data) ? ver.data : ver;
     const localVersion = await getMeta('version');
 
@@ -626,35 +635,35 @@ async function silentUpdateReference() {
     }
 
     console.log('[sync] Тянем общие правила...');
-    const remRes = await apiGet('getRemarksFull');
+    const remRes = await directFetch('getRemarksFull');
     const remData = (remRes && remRes.data) ? remRes.data : remRes;
     if (remData) await setRemarks(remData);
 
-    const markRes = await apiGet('getMarks');
+    const markRes = await directFetch('getMarks');
     const markData = (markRes && markRes.data) ? markRes.data : markRes;
     if (markData) await setMarks(markData);
 
     console.log('[sync] Тянем список домов...');
-    const housesRes = await apiGet('getHouses');
+    const housesRes = await directFetch('getHouses');
     const houses = (housesRes && housesRes.data) ? housesRes.data : housesRes;
+    
     if (Array.isArray(houses) && houses.length > 0) {
       await setMeta('houses_cache', houses);
       
-      // Скачиваем справочник для каждого дома
-            for (const h of houses) {
+      for (const h of houses) {
         console.log('[sync] Тянем справочник для дома:', h.name);
         try {
-          console.log('[DEBUG] Запрашиваем справочник для:', h.id);
-          console.log('[DEBUG db.js] Отправляем houseId:', h.id);
-const refRes = await apiGet('getReference', { houseId: h.id });
-console.log('[DEBUG db.js] Ответ сервера:', refRes);
+          const refRes = await directFetch('getReference', { houseId: h.id });
           const refData = (refRes && refRes.data) ? refRes.data : refRes;
+          
           if (refData && typeof refData === 'object') {
             await setReference(h.id, refData);
             console.log('[sync] Сохранено квартир для ' + h.name + ': ' + Object.keys(refData).length);
+          } else {
+            console.warn('[sync] Пустой справочник для дома:', h.name);
           }
         } catch (refErr) {
-          console.warn('[sync] Не удалось скачать справочник для ' + h.name + ': ' + refErr.message);
+          console.warn('[sync] Не удалось скачать справочник для ' + h.name + ':', refErr.message);
         }
       }
     }
@@ -667,6 +676,7 @@ console.log('[DEBUG db.js] Ответ сервера:', refRes);
     return false;
   }
 }
+
 // ================= OPFS =================
 async function opfsWriteFile(fileName, blob) {
   try {
@@ -688,7 +698,7 @@ async function opfsReadFile(fileName) {
     if (!navigator.storage || !navigator.storage.getDirectory) return null;
     const root = await navigator.storage.getDirectory();
     const fileHandle = await root.getFileHandle(fileName);
-    return await fileHandle.getFile(); // Возвращает File (это Blob)
+    return await fileHandle.getFile();
   } catch (e) {
     console.warn('[OPFS] read error:', e);
     return null;
@@ -708,10 +718,9 @@ async function opfsDeleteFile(fileName) {
 }
 
 // ================= ЭКСПОРТ =================
-window.db = { opfsWriteFile,
-  opfsReadFile,
-  opfsDeleteFile,
-  saveDraft,  saveOfflineVisit, getOfflineVisitsByKv, getAllOfflineVisits, getAllOfflineVisitsInfo,
+window.db = {
+  opfsWriteFile, opfsReadFile, opfsDeleteFile,
+  saveDraft, saveOfflineVisit, getOfflineVisitsByKv, getAllOfflineVisits, getAllOfflineVisitsInfo,
   clearAllOfflineVisits, loadDraft, clearDraft, hasDraft,
   getMeta, setMeta,
   getReference, setReference,
@@ -726,7 +735,7 @@ window.db = { opfsWriteFile,
   getQueueStats,
   uuid,
   getUserName, setUserName,
-    silentUpdateReference,
+  silentUpdateReference,
   requestPersistentStorage,
   _openDB: openDB
 };
