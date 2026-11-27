@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.44';
+const APP_VERSION = '2.1.45';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -590,9 +590,17 @@ function toggleSettingsBlock(key) {
 }
 async function renderSettings(app) {
   let refCount = 0;
+
   try {
-    const ref = await window.db.getReference();
-    refCount = ref ? Object.keys(ref).length : 0;
+    const houses = await window.db.getMeta('houses_cache');
+
+    for (const h of (Array.isArray(houses) ? houses : [])) {
+      const ref = await window.db.getReference(h.id);
+
+      if (ref && !Object.prototype.hasOwnProperty.call(ref, 'error')) {
+        refCount += Object.keys(ref).length;
+      }
+    }
   } catch (e) {}
   const version = await window.db.getMeta('version');
   
@@ -698,28 +706,40 @@ async function checkAndUpdateApp() {
 }
 
 async function updateReferenceNow() {
-  if (!navigator.onLine) { state.settingsMessage = { type: 'error', text: 'Нет интернета.' }; render(); return; }
-  state.settingsMessage = { type: '', text: 'Обновление справочника…' };
+  if (!navigator.onLine) {
+    state.settingsMessage = {
+      type: 'error',
+      text: 'Нет интернета.'
+    };
+    render();
+    return;
+  }
+
+  state.settingsMessage = {
+    type: '',
+    text: 'Обновление справочников…'
+  };
+
   render();
-  window.scrollTo(0, 0);
+
   try {
-    const refRes = await apiGet('getReference');
-    const refData = (refRes && refRes.data) ? refRes.data : refRes;
-    await window.db.setReference(refData);
-    const remRes = await apiGet('getRemarksFull');
-    const remData = (remRes && remRes.data) ? remRes.data : remRes;
-    await window.db.setRemarks(remData);
-    const markRes = await apiGet('getMarks');
-    const markData = (markRes && markRes.data) ? markRes.data : markRes;
-    await window.db.setMarks(markData);
-    try {
-      const verRes = await apiGet('getVersion');
-      const verData = (verRes && verRes.data) ? verRes.data : verRes;
-      await window.db.setMeta('version', verData);
-    } catch (e) {}
-    const count = refData ? Object.keys(refData).length : 0;
-    state.settingsMessage = { type: 'ok', text: '✓ Справочник обновлён: ' + count + ' квартир.' };
-  } catch (err) { state.settingsMessage = { type: 'error', text: 'Ошибка: ' + err.message }; }
+    const counts = await window.db.silentUpdateReference();
+
+    state.settingsMessage = {
+      type: 'ok',
+      text: 'Справочники обновлены: ' +
+        counts.map(x =>
+          x.house + ' — ' + x.count + ' квартир'
+        ).join('; ')
+    };
+
+  } catch (err) {
+    state.settingsMessage = {
+      type: 'error',
+      text: 'Ошибка: ' + err.message
+    };
+  }
+
   await refreshQueueStats();
   render();
 }
