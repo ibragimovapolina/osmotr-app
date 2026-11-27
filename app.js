@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.48';
+const APP_VERSION = '2.1.50';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -1054,31 +1054,39 @@ async function discardDraft() {
 }
 
 // ================= ШАГ 1 =================
-function startNewVisit() {
-  if (state.draftId) {
-    window.db.getPhotosForVisit(state.draftId).then(photos => {
-      photos.forEach(p => { if (p && p.photoId && window.db.deletePhoto) window.db.deletePhoto(p.photoId).catch(() => {}); });
-    }).catch(() => {});
-  }
-  if (window.db && window.db.clearDraft) window.db.clearDraft().catch(() => {});
-  state.form = { kvNumber: '', apartment: null, editedFields: {}, divisions: [], currentDivisionIndex: 0, results: {}, uploading: {}, comments: '', extraPhotos: [], sourceVisitId: null };
-  state.submitResult = null;
-  state.pendingDraft = null;
-  state.kvWarning = null;
-  state.volumeModal = null;
-  state.draftId = window.db.uuid();
-  state.screen = 'newVisitKv';
-  render();
-}
-
 async function startNewVisit() {
-  if (state.draftId) {
-    // ... (очистка старого черновика, как было)
+  if (state.startingNewVisit || state.isSubmitting) return;
+  state.startingNewVisit = true;
+  try {
+    const draft = await window.db.loadDraft(true);
+    if (draft) {
+      state.pendingDraft = draft;
+      state.screen = 'home';
+      render();
+      alert('Есть незавершённый осмотр. Сначала продолжите черновик.');
+      return;
+    }
+    clearTimeout(_autoSaveTimeout);
+    state.form = {
+      houseId: '', section: '', kvNumber: '', floorNumber: '',
+      floorKvNumber: '', apartment: null, editedFields: {}, divisions: [],
+      currentDivisionIndex: 0, results: {}, uploading: {}, comments: '',
+      extraPhotos: [], sourceVisitId: null
+    };
+    state.draftId = null;
+    state.pendingDraft = null;
+    state.submitResult = null;
+    state.kvWarning = null;
+    state.volumeModal = null;
+    state.existingVisits = [];
+    state.screen = 'newVisitHouse';
+    render();
+    window.scrollTo(0, 0);
+  } catch (err) {
+    alert('Не удалось проверить черновик: ' + err.message);
+  } finally {
+    state.startingNewVisit = false;
   }
-  state.form = { houseId: '', kvNumber: '', apartment: null, editedFields: {}, divisions: [], currentDivisionIndex: 0, results: {}, uploading: {}, comments: '', extraPhotos: [], sourceVisitId: null };
-  state.screen = 'newVisitHouse';
-  render();
-  window.scrollTo(0, 0);
 }
 
 function renderNewVisitHouse(app) {
@@ -1310,128 +1318,8 @@ function scheduleApartmentSearch() {
     } catch (err) { if (current()) result.textContent = err.message; }
   }, 400);
 }
-function switchKvInputMode(mode) {
-  state.kvInputMode = mode;
-  state.form.kvNumber = ''; // Сбрасываем старые данные
-  state.form.apartment = null;
-  render();
-}
 
 let _kvCheckTimeout = null;
-
-function onKvInput(value) {
-  state.form.kvNumber = value;
-  state.kvWarning = null;
-  const btn = document.getElementById('kvNextBtn');
-  const result = document.getElementById('kvResult');
-  if (btn) btn.disabled = true;
-  if (result) result.innerHTML = '<div class="hint">Проверяем…</div>';
-
-  if (_kvCheckTimeout) clearTimeout(_kvCheckTimeout);
-  
-  _kvCheckTimeout = setTimeout(async () => {
-    const kv = String(value || '').trim();
-    if (!kv) { if (result) result.innerHTML = ''; return; }
-    
-    try {
-      const res = await checkApartmentSmart(kv);
-      const data = res;
-
-      if (data && data.found) {
-        state.form.apartment = data.data;
-        
-        // === ВОЗМОЖНОСТЬ ЗАГРУЗКИ ПРОШЛЫХ ОСМОТРОВ ===
-        // Если захочешь включить обратно, просто раскомментируй строку ниже:
-        // loadExistingVisitsList(kv);
-        state.existingVisits = []; // Пока отключено
-        
-        renderKvResultBlock();
-        
-        if (btn) btn.disabled = false;
-      } else {
-        state.form.apartment = null;
-        state.kvWarning = null;
-        state.existingVisits = [];
-        if (result) result.innerHTML = `<div class="apartment-not-found">⚠ Квартира "${escapeHtml(kv)}" не найдена в справочнике.</div>`;
-        removeKvWarningBlock();
-      }
-    } catch (err) {
-      if (result) result.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
-      removeKvWarningBlock();
-    }
-  }, 400);
-}
-
-function onFloorInput() {
-  const floorVal = document.getElementById('kvFloorInput').value;
-  const numVal = document.getElementById('kvNumFloorInput').value;
-  
-  state.form.floorNumber = floorVal;
-  state.form.floorKvNumber = numVal;
-  state.kvWarning = null;
-  
-  const btn = document.getElementById('kvNextBtn');
-  const result = document.getElementById('kvResult');
-  if (btn) btn.disabled = true;
-  
-  if (!floorVal || !numVal) {
-    if (result) result.innerHTML = '';
-    return;
-  }
-  
-  if (result) result.innerHTML = '<div class="hint">Проверяем…</div>';
-
-  if (_kvCheckTimeout) clearTimeout(_kvCheckTimeout);
-  _kvCheckTimeout = setTimeout(async () => {
-    try {
-      const res = await checkApartmentByFloorSmart(floorVal, numVal);
-      if (res && res.found) {
-        state.form.apartment = res.data;
-        state.form.kvNumber = res.kv; // Сохраняем сквозной номер, который нашли
-        renderKvResultBlock();
-        if (btn) btn.disabled = false;
-      } else {
-        state.form.apartment = null;
-        if (result) result.innerHTML = `<div class="apartment-not-found">⚠ На ${escapeHtml(floorVal)} этаже квартира №${escapeHtml(numVal)} не найдена.</div>`;
-      }
-    } catch (err) {
-      if (result) result.innerHTML = `<div class="error-box">${escapeHtml(err.message)}</div>`;
-    }
-  }, 400);
-}
-
-async function checkApartmentByFloorSmart(floor, numberOnFloor) {
-  const houseId = state.form.houseId;
-  let ref = null;
-  
-  if (!navigator.onLine) {
-    ref = await window.db.getReference(houseId);
-  } else {
-    try {
-      ref = await window.db.getReference(houseId);
-      if (!ref) {
-        const refRes = await apiGet('getReference', { houseId: houseId });
-        ref = (refRes && refRes.data) ? refRes.data : refRes;
-        if (ref) await window.db.setReference(houseId, ref);
-      }
-    } catch (e) {
-      ref = await window.db.getReference(houseId);
-    }
-  }
-
-  if (ref) {
-    const keys = Object.keys(ref);
-    for (const k of keys) {
-      const apt = ref[k];
-      if (apt && String(apt.floor).trim() === String(floor).trim() && 
-          String(apt.numberOnFloor).trim() === String(numberOnFloor).trim()) {
-        return { found: true, kv: k, data: apt };
-      }
-    }
-  }
-  
-  return { found: false };
-}
 
 async function checkServerVisits(kv) {
   try {
@@ -1565,22 +1453,22 @@ async function backgroundDownloadPhotos(payload, kv) {
   }
 }
 async function onKvNext() {
-    if (!state.form.apartment) return;
+  if (state.screen !== 'newVisitKv' || !state.form.apartment || !state.form.houseId) return;
+  if (state.kvInputMode === 'floor' && !state.form.section) return;
+  if (state.form.section &&
+      String(state.form.apartment.section) !== String(state.form.section)) return;
 
-if (state.kvInputMode === 'floor' && !state.form.section) return;
-
-if (state.form.section &&
-    String(state.form.apartment.section) !== String(state.form.section)) return;
-
-state.form.section = String(state.form.apartment.section ?? '').trim();
-  
-  // Всегда создаем новый черновик, без привязки к старым осмотрам
-  state.draftId = window.db.uuid();
+  state.form.section = String(state.form.apartment.section ?? '').trim();
+  state.draftId = state.draftId || window.db.uuid();
   state.form.sourceVisitId = null;
-  
   state.screen = 'newVisitRef';
+  if (!await autoSave()) {
+    state.screen = 'newVisitKv';
+    render();
+    alert('Не удалось сохранить черновик. Повторите попытку.');
+    return;
+  }
   render();
-  autoSave();
 }
 // ================= ШАГ 2 =================
 function renderNewVisitRef(app) {
@@ -1664,8 +1552,36 @@ async function getFormDataSmart(apartment) {
   }
 }
 
-function backToKv() { state.screen = 'newVisitKv'; render(); }
-function goHome() { state.screen = 'home'; refreshQueueStats().then(render); }
+function backToKv() {
+  if ((state.form.divisions || []).length) {
+    alert('Квартиру нельзя менять после открытия формы осмотра.');
+    return;
+  }
+  state.screen = 'newVisitKv';
+  render();
+}
+
+async function goHome() {
+  if (state.isSubmitting || Object.keys(state.form.uploading || {}).length) {
+    alert('Дождитесь сохранения данных.');
+    return;
+  }
+  clearTimeout(_autoSaveTimeout);
+  if (['newVisitRef', 'division'].includes(state.screen) && state.draftId) {
+    if (!await autoSave()) {
+      alert('Не удалось сохранить черновик.');
+      return;
+    }
+  }
+  try {
+    state.pendingDraft = await window.db.loadDraft(true);
+    state.screen = 'home';
+    await refreshQueueStats();
+    render();
+  } catch (err) {
+    alert('Не удалось прочитать черновик: ' + err.message);
+  }
+}
 
 // ================= РАЗДЕЛ =================
 function renderDivision(app) {
@@ -1915,7 +1831,9 @@ async function onPhotoSelected2(event, stateKey, variantKey) {
         localUrl: localUrl 
       };
       
-      await window.db.addPhoto(photoRecord);
+            if (!await window.db.addPhoto(photoRecord)) {
+        throw new Error('Не удалось записать фотографию в локальное хранилище');
+      }
 
       const photoItem = { photoId: photoId, localUrl: localUrl, name: fileName, objectKey: objectKey, divisionKey: divisionKey, variantKey: isCommon ? '' : variantKey };
       
@@ -2088,7 +2006,9 @@ async function onExtraPhotoSelected(event) {
         localUrl: localUrl
       };
 
-      await window.db.addPhoto(photoRecord);
+            if (!await window.db.addPhoto(photoRecord)) {
+        throw new Error('Не удалось записать фотографию в локальное хранилище');
+      }
 
       state.form.extraPhotos.push({ photoId: photoId, localUrl: localUrl, name: fileName });
       
@@ -2205,6 +2125,14 @@ function onDivisionBack() {
 // ================= ОТПРАВКА =================
 async function submitVisit() {
   if (state.isSubmitting) return;
+  if (!state.form.houseId || !state.form.kvNumber || !state.draftId || !state.form.apartment) {
+    alert('В осмотре отсутствуют данные литера, квартиры или черновика. Отправка остановлена.');
+    return;
+  }
+  if (Object.keys(state.form.uploading || {}).length) {
+    alert('Дождитесь сохранения фотографий.');
+    return;
+  }
 
   // ПРОВЕРКА ОБЪЕМОВ ПЕРЕД ОТПРАВКОЙ
   let missingVolumesError = null;
@@ -2246,7 +2174,9 @@ async function submitVisit() {
   const app = document.getElementById('app');
   app.innerHTML = '<div class="loading">Сохранение…</div>';
   try {
-    const clientId = state.draftId || window.db.uuid();
+        clearTimeout(_autoSaveTimeout);
+    if (!await autoSave(true)) throw new Error('Не удалось сохранить черновик');
+    const clientId = state.draftId;
     const cleanResults = {};
     
     Object.keys(state.form.results).forEach(key => {
@@ -2282,7 +2212,10 @@ async function submitVisit() {
     });
 
     const payload = {
-      houseId: state.form.houseId, 
+            houseId: state.form.houseId,
+      section: state.form.section || '',
+      apartment: state.form.apartment,
+      divisions: state.form.divisions,
       email: state.user.name || 'осмотрщик',
       kvNumber: state.form.kvNumber,
       results: cleanResults,
@@ -2301,8 +2234,12 @@ async function submitVisit() {
       clientId: clientId
     };
     
-    await window.db.addVisit({ clientId: clientId, createdAt: new Date().toISOString(), status: 'pending', attempts: 0, lastError: '', hidden: false, payload: payload });
-    if (window.db && window.db.clearDraft) await window.db.clearDraft();
+        const saved = await window.db.enqueueDraftVisit({
+      clientId: clientId, createdAt: new Date().toISOString(), status: 'pending',
+      attempts: 0, lastError: '', hidden: false, payload: payload
+    });
+    if (!saved) throw new Error('Не удалось записать осмотр в очередь. Черновик сохранён.');
+    state.pendingDraft = null;
     await refreshQueueStats();
     if (navigator.onLine && window.sync && window.sync.syncNow) window.sync.syncNow().catch(() => {});
     state.screen = 'saved';
@@ -2335,7 +2272,10 @@ function renderSaved(app) {
 // ================= АВТОСОХРАНЕНИЕ =================
 let _autoSaveTimeout = null;
 
-function autoSave() {
+function autoSave(force = false) {
+  clearTimeout(_autoSaveTimeout);
+  if (!['newVisitRef', 'division'].includes(state.screen) ||
+      !state.draftId || (!force && state.isSubmitting)) return Promise.resolve(false);
   if (!window.db || !window.db.saveDraft) return Promise.resolve(false);
   const draft = {
        form: { houseId: state.form.houseId, section: state.form.section, floorNumber: state.form.floorNumber, floorKvNumber: state.form.floorKvNumber, kvNumber: state.form.kvNumber, apartment: state.form.apartment, editedFields: state.form.editedFields, divisions: state.form.divisions, currentDivisionIndex: state.form.currentDivisionIndex, results: state.form.results, comments: state.form.comments, extraPhotos: state.form.extraPhotos, sourceVisitId: state.form.sourceVisitId },
