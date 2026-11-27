@@ -4,7 +4,7 @@
 // ⚠️ При обновлении приложения МЕНЯЙТЕ SW_VERSION (например, '1.1.5').
 // Это автоматически сбросит старый кэш у всех пользователей.
 
-const SW_VERSION = '2.1.50';
+const SW_VERSION = '2.1.51';
 const CACHE_NAME = 'osmotr-' + SW_VERSION;
 
 const PRECACHE_URLS = [
@@ -30,28 +30,54 @@ const NETWORK_FIRST = [
 
 self.addEventListener('install', (event) => {
   console.log('[SW] install, версия', SW_VERSION);
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(PRECACHE_URLS.map(url => new Request(url, { cache: 'reload' })))
-        .catch((err) => {
-          console.warn('[SW] Не все файлы закэшированы:', err);
-        });
-    })
-  );
-  self.skipWaiting();
+
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+
+    await cache.addAll(
+      PRECACHE_URLS.map(url =>
+        new Request(url, { cache: 'reload' })
+      )
+    );
+
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', (event) => {
   console.log('[SW] activate, версия', SW_VERSION);
-  event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
-      );
-    })
-  );
-  self.clients.claim();
+
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+
+    await Promise.all(
+      keys
+        .filter(k =>
+          k.startsWith('osmotr-') && k !== CACHE_NAME
+        )
+        .map(k => caches.delete(k))
+    );
+
+    await self.clients.claim();
+  })());
 });
+
+async function offlineResponse(req) {
+  if (req.mode === 'navigate') {
+    const page = await caches.match('./index.html');
+    if (page) return page;
+  }
+
+  return new Response(
+    'Нет соединения. Подключитесь к интернету и повторите.',
+    {
+      status: 503,
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8'
+      }
+    }
+  );
+}
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
@@ -78,12 +104,7 @@ self.addEventListener('fetch', (event) => {
         .catch(() => {
           return caches.match(req).then((cached) => {
             if (cached) return cached;
-            if (req.mode === 'navigate') return caches.match('./index.html');
-            return new Response('Нет соединения', {
-              status: 503,
-              statusText: 'Offline',
-              headers: { 'Content-Type': 'text/plain; charset=utf-8' }
-            });
+            return offlineResponse(req);
           });
         })
     );
@@ -108,12 +129,7 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       }).catch(() => {
-        if (req.mode === 'navigate') return caches.match('./index.html');
-        return new Response('Нет соединения', {
-          status: 503,
-          statusText: 'Offline',
-          headers: { 'Content-Type': 'text/plain; charset=utf-8' }
-        });
+        return offlineResponse(req);
       });
     })
   );
