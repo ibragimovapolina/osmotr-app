@@ -312,7 +312,7 @@ async function syncVisit(visit) {
     }
 
     try {
-      const remote = await uploadPhotoPost(photo.blob, photo.fileName, photo.kvNumber);
+      const remote = await uploadPhotoPost(photo.blob, photo.fileName, visit.payload.kvNumber);
       await window.db.updatePhoto(photo.photoId, {
         status: 'uploaded',
         remote: remote,
