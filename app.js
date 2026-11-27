@@ -1,6 +1,6 @@
 // ================= НАСТРОЙКИ =================
 const API_URL = 'https://osmotr-layero-proxy-main.layero.app';
-const APP_VERSION = '2.1.53';
+const APP_VERSION = '2.1.54';
 
 // ================= СОСТОЯНИЕ =================
 const state = {
@@ -565,7 +565,8 @@ async function syncAllNow() {
 
 async function showQueue() {
   if (!window.db || !window.db.getAllVisits) return;
-  state.queueList = await window.db.getAllVisits();
+    state.queueList = await window.db.getAllVisits();
+  await loadVisitHouseNames();
   state.screen = 'queue';
   render();
   window.scrollTo(0, 0);
@@ -746,7 +747,8 @@ async function updateReferenceNow() {
 
 async function exportVisitsCsvFromSettings() {
   try {
-    const rows = await window.db.getVisibleVisits();
+        const rows = await window.db.getVisibleVisits();
+    await loadVisitHouseNames();
     exportVisitsCsvData(rows);
   } catch (err) { alert('Не удалось экспортировать: ' + err.message); }
 }
@@ -754,11 +756,54 @@ async function exportVisitsCsvFromSettings() {
 // ================= МОИ ОСМОТРЫ =================
 async function showVisits() {
   if (!window.db || !window.db.getVisibleVisits) return;
-  state.visitsList = await window.db.getVisibleVisits();
+    state.visitsList = await window.db.getVisibleVisits();
+  await loadVisitHouseNames();
   state.expandedVisitId = null;
   state.screen = 'visits';
   render();
   window.scrollTo(0, 0);
+}
+
+async function loadVisitHouseNames() {
+  const houses = await window.db.getMeta('houses_cache');
+  state.visitHouseNames = Object.fromEntries((Array.isArray(houses) ? houses : [])
+    .filter(h => h && h.id).map(h => [String(h.id), h.name || h.id]));
+}
+
+function visitHouseId(v) {
+  return String((v.payload || {}).houseId || '');
+}
+
+function visitHouseLabel(v) {
+  const id = visitHouseId(v);
+  return (state.visitHouseNames || {})[id] || id || 'Литер не указан';
+}
+
+function visitLocationLabel(v) {
+  const p = v.payload || {};
+  const section = p.section || (p.apartment || {}).section;
+  return visitHouseLabel(v) + (section ? ' · Секция ' + section : '') +
+    ' · Кв. ' + (p.kvNumber || '—');
+}
+
+function setVisitHouseFilter(value) {
+  state.visitHouseFilter = value;
+  state.expandedVisitId = null;
+  render();
+}
+
+function visitHouseFilterHtml(all) {
+  const ids = [...new Set([...Object.keys(state.visitHouseNames || {}),
+    ...all.map(visitHouseId).filter(Boolean)])].sort();
+  const current = state.visitHouseFilter || '';
+  const option = (value, label) => `<option value="${escapeHtml(value)}" ${current === value ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+  return `<div style="margin-bottom:12px;">
+    <label class="field-label">Литер</label>
+    <select class="field-input" onchange="setVisitHouseFilter(this.value)">
+      ${option('', 'Все литеры')}
+      ${ids.map(id => option('house:' + id, (state.visitHouseNames || {})[id] || id)).join('')}
+      ${all.some(v => !visitHouseId(v)) ? option('unknown', 'Литер не указан') : ''}
+    </select></div>`;
 }
 
 function setVisitsFilter(filter) { state.visitsFilter = filter; state.expandedVisitId = null; render(); }
@@ -774,16 +819,19 @@ async function hideVisitFromList(clientId) {
 
 function renderVisits(app) {
   const all = state.visitsList || [];
-  let filtered = all;
-    if (state.visitsFilter === 'synced') filtered = all.filter(v => v.status === 'synced');
-  else if (state.visitsFilter === 'pending') filtered = all.filter(v => v.status !== 'synced' && v.status !== 'broken');
-  else if (state.visitsFilter === 'broken') filtered = all.filter(v => v.status === 'broken');
+  const houseFilter = state.visitHouseFilter || '';
+  let filtered = all.filter(v => !houseFilter ||
+    (houseFilter === 'unknown' ? !visitHouseId(v) : 'house:' + visitHouseId(v) === houseFilter));
+  if (state.visitsFilter === 'synced') filtered = filtered.filter(v => v.status === 'synced');
+  else if (state.visitsFilter === 'pending') filtered = filtered.filter(v => v.status !== 'synced' && v.status !== 'broken');
+  else if (state.visitsFilter === 'broken') filtered = filtered.filter(v => v.status === 'broken');
   filtered = filtered.slice().sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   const limited = filtered.slice(0, 200);
   const itemsHtml = limited.length ? limited.map(v => renderVisitCard(v)).join('') : '<div class="hint">Здесь пока ничего нет.</div>';
   app.innerHTML = `
     <div class="card">
-      <div class="step-header"><h2>Мои осмотры</h2><p>Всего: ${all.length}. Показано: ${limited.length}.</p></div>
+     <div class="step-header"><h2>Мои осмотры</h2><p>Всего: ${all.length}. Показано: ${limited.length}.</p></div>
+      ${visitHouseFilterHtml(all)}
       <div style="margin-bottom:12px;">
         <label class="field-label" style="font-size:13px;">Фильтр</label>
                <select class="field-input" onchange="setVisitsFilter(this.value)" style="width:100%;">
@@ -843,7 +891,7 @@ function renderVisitCard(v) {
   }
   return `
     <div class="visit-card" onclick="toggleVisitDetails('${escapeAttr(v.clientId)}')">
-      <div class="visit-card-title"><span class="visit-card-kv">Кв. ${escapeHtml(kv)}</span><span class="visit-card-status ${statusClass}">${statusText}</span></div>
+      <div class="visit-card-title"><span class="visit-card-kv">${escapeHtml(visitLocationLabel(v))}</span><span class="visit-card-status ${statusClass}">${statusText}</span></div>
       <div class="visit-card-sub">👤 ${escapeHtml(userName)} · ${escapeHtml(createdStr)}</div>
       ${detailsHtml}
     </div>
@@ -866,6 +914,8 @@ function exportVisitsCsvData(rows) {
     else if (v.status === 'syncing') status = 'отправляется';
     allLines.push('');
     allLines.push('=== ОСМОТР ===');
+        allLines.push('Литер;' + csvEscape(visitHouseLabel(v)));
+    allLines.push('Секция;' + csvEscape((v.payload || {}).section || ((v.payload || {}).apartment || {}).section || ''));
     allLines.push('Квартира;' + csvEscape(kv));
     allLines.push('Осмотрщик;' + csvEscape(userName));
     allLines.push('Создан;' + csvEscape(created));
@@ -950,7 +1000,7 @@ function renderQueue(app) {
     const photoCount = countVisitPhotos(v);
     return `
       <div class="object-card">
-        <div class="object-title">Квартира ${escapeHtml(kv)}</div>
+        <div class="object-title">${escapeHtml(visitLocationLabel(v))}</div>
         <p style="font-size:14px;color:#5f6368;margin-bottom:8px;">${escapeHtml(when)}</p>
         <p style="font-size:14px;color:${v.status === 'error' ? '#c5221f' : '#5f6368'};">${escapeHtml(statusText)}</p>
         <p style="font-size:13px;color:#5f6368;margin:8px 0;">📷 Фото: ${photoCount}</p>
@@ -2743,7 +2793,7 @@ function renderVisitPreviewModal() {
   backdrop.onclick = closeVisitPreview;
   backdrop.innerHTML = `
     <div class="modal-window preview-window" onclick="event.stopPropagation()">
-      <div class="preview-header"><h2>Квартира ${escapeHtml(kv)}</h2><button class="preview-close" onclick="closeVisitPreview()">✕</button></div>
+     <div class="preview-header"><h2>${escapeHtml(visitLocationLabel(v))}</h2><button class="preview-close" onclick="closeVisitPreview()">✕</button></div>
       <div class="preview-meta">
         <div>👤 ${escapeHtml(userName)}</div>
         <div>📅 Создан: ${escapeHtml(created)}</div>
